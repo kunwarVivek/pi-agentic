@@ -18,6 +18,7 @@ import type { ControlStore } from "./store-control.ts";
 import {
 	type Authenticator,
 	type PeerCredential,
+	type Principal,
 	authenticate,
 } from "./auth.ts";
 import {
@@ -35,9 +36,10 @@ export interface ControlServerOptions {
 	/** Resolve a connection's credential. Socket layer supplies uid/token. */
 }
 
-/** A single authenticated session's identity. */
+/** A single authenticated session's identity. Admin sessions have no unit. */
 interface Session {
 	unitId: string;
+	admin: boolean;
 }
 
 function ok(id: number, result: unknown): RpcResponse {
@@ -138,6 +140,31 @@ export class ControlServer {
 				const result = this.store.meter(p.taskId, asBudget(p.usage));
 				return ok(req.id, result);
 			}
+			case "list_approvals": {
+				// Admin sees the whole inbox; a unit sees only its owner's approvals (ADR-0007).
+				if (session.admin) return ok(req.id, this.store.listOpenApprovals());
+				const owner = this.store.getUnit(session.unitId)?.owner;
+				if (!owner) return makeErr("forbidden", req.id, "caller has no owner");
+				return ok(req.id, this.store.listOpenApprovals(owner));
+			}
+			case "resolve_approval": {
+				if (typeof p.id !== "string" || (p.decision !== "approved" && p.decision !== "denied")) {
+					return makeErr("bad_request", req.id, "resolve_approval needs id and decision (approved|denied)");
+				}
+				const appr = this.store.getApproval(p.id);
+				if (!appr) return makeErr("not_found", req.id, `unknown approval ${p.id}`);
+				const choice = typeof p.choice === "string" ? p.choice : undefined;
+				let decidedBy: string;
+				if (session.admin) {
+					decidedBy = "admin";
+				} else {
+					const owner = this.store.getUnit(session.unitId)?.owner;
+					if (!owner || owner !== appr.owner) return makeErr("forbidden", req.id, "approval is not owned by this unit");
+					decidedBy = owner;
+				}
+				const result = this.store.resolveApproval(p.id, p.decision, decidedBy, choice);
+				return ok(req.id, result);
+			}
 			default:
 				return makeErr("bad_request", req.id, `unknown method ${String(req.method)}`);
 		}
@@ -226,12 +253,12 @@ export class ControlServer {
 				return;
 			}
 			const token = typeof req.params.token === "string" ? req.params.token : undefined;
-			const unitId = authenticate(this.auth, { ...baseCred, ...(token ? { token } : {}) });
-			if (!unitId) {
+			const principal: Principal | null = authenticate(this.auth, { ...baseCred, ...(token ? { token } : {}) });
+			if (!principal) {
 				fail("unauthenticated", req.id, "no credential maps to a unit");
 				return;
 			}
-			setSession({ unitId });
+			setSession(principal.kind === "admin" ? { unitId: "", admin: true } : { unitId: principal.unitId, admin: false });
 			const pinnedTask = typeof req.params.taskId === "string" ? req.params.taskId : null;
 			setTask(pinnedTask);
 		}

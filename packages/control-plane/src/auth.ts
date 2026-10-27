@@ -19,13 +19,21 @@ export interface Authenticator {
 	byUid(uid: number | undefined): string | null;
 	/** Resolve a unit id from a presented token, or null if unknown. */
 	byToken(token: string | undefined): string | null;
+	/** True when the token is the operator admin token (human root, ADR-0007). */
+	isAdminToken(token: string | undefined): boolean;
 }
+
+/** The authenticated principal behind a connection. */
+export type Principal =
+	| { readonly kind: "unit"; readonly unitId: string }
+	| { readonly kind: "admin" };
 
 /** In-memory token + uid registry. The dispatcher populates it as it starts units. */
 export class PeerRegistry implements Authenticator {
 	private readonly uidToUnit = new Map<number, string>();
 	private readonly tokenToUnit = new Map<string, string>();
 	private readonly unitToToken = new Map<string, string>();
+	private readonly adminTokens = new Set<string>();
 
 	bindUid(uid: number, unitId: string): void {
 		this.uidToUnit.set(uid, unitId);
@@ -38,6 +46,13 @@ export class PeerRegistry implements Authenticator {
 		const token = randomBytes(32).toString("hex");
 		this.unitToToken.set(unitId, token);
 		this.tokenToUnit.set(token, unitId);
+		return token;
+	}
+
+	/** Issue a fresh operator admin token (human root). Not tied to any unit. */
+	issueAdminToken(): string {
+		const token = randomBytes(32).toString("hex");
+		this.adminTokens.add(token);
 		return token;
 	}
 
@@ -60,6 +75,19 @@ export class PeerRegistry implements Authenticator {
 		}
 		return matched;
 	}
+
+	isAdminToken(token: string | undefined): boolean {
+		if (!token) return false;
+		const presented = Buffer.from(token);
+		let matched = false;
+		for (const known of this.adminTokens) {
+			const knownBuf = Buffer.from(known);
+			if (knownBuf.length === presented.length && timingSafeEqual(knownBuf, presented)) {
+				matched = true;
+			}
+		}
+		return matched;
+	}
 }
 
 export interface PeerCredential {
@@ -70,10 +98,16 @@ export interface PeerCredential {
 }
 
 /**
- * Resolve the authenticated unit for a connection. Prefer the OS-level uid
- * (unforgeable) over the token (bearer secret). Returns null when neither
- * credential maps to a unit — the caller must then reject every request.
+ * Resolve the authenticated principal for a connection. Prefer the OS-level uid
+ * (unforgeable) over the token (bearer secret). A uid always maps to a unit; a
+ * token may be the operator admin token (human root) or a unit's dev token.
+ * Returns null when nothing matches — the caller must then reject every request.
  */
-export function authenticate(auth: Authenticator, cred: PeerCredential): string | null {
-	return auth.byUid(cred.uid) ?? auth.byToken(cred.token);
+export function authenticate(auth: Authenticator, cred: PeerCredential): Principal | null {
+	const byUid = auth.byUid(cred.uid);
+	if (byUid) return { kind: "unit", unitId: byUid };
+	if (auth.isAdminToken(cred.token)) return { kind: "admin" };
+	const byToken = auth.byToken(cred.token);
+	if (byToken) return { kind: "unit", unitId: byToken };
+	return null;
 }

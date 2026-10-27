@@ -4,6 +4,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/control-plane" },
     { "path": "./packages/extension" },
-    { "path": "./packages/deploy" }
+    { "path": "./packages/deploy" },
+    { "path": "./packages/cli" }
   ]
 }

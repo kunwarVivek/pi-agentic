@@ -17,6 +17,7 @@ import { LineDecoder, encodeLine, PROTOCOL_VERSION } from "../src/protocol.ts";
 import { PeerRegistry, authenticate } from "../src/auth.ts";
 import { ControlServer } from "../src/server.ts";
 import { SocketControlClient } from "../src/socket-client.ts";
+import { AdminClient } from "../src/admin-client.ts";
 import { Dispatcher, type WorkerSpec } from "../src/dispatcher.ts";
 
 const BIG: Budget = { tokens: 100000, costUsd: 100, wallClockSec: 100000 };
@@ -86,9 +87,20 @@ test("PeerRegistry maps uid and token; uid wins over token", () => {
 	assert.equal(reg.byUid(1001), "sales");
 	assert.equal(reg.byToken(token), "sales");
 	assert.equal(reg.byToken("deadbeef"), null);
-	assert.equal(authenticate(reg, { uid: 1001, token: "wrong" }), "sales");
-	assert.equal(authenticate(reg, { token }), "sales");
+	assert.deepEqual(authenticate(reg, { uid: 1001, token: "wrong" }), { kind: "unit", unitId: "sales" });
+	assert.deepEqual(authenticate(reg, { token }), { kind: "unit", unitId: "sales" });
 	assert.equal(authenticate(reg, {}), null);
+});
+
+test("PeerRegistry issues an admin token distinct from unit tokens", () => {
+	const reg = new PeerRegistry();
+	const unitToken = reg.issueToken("sales");
+	const admin = reg.issueAdminToken();
+	assert.notEqual(admin, unitToken);
+	assert.equal(reg.isAdminToken(admin), true);
+	assert.equal(reg.isAdminToken(unitToken), false);
+	assert.equal(reg.byToken(admin), null, "admin token maps to no unit");
+	assert.deepEqual(authenticate(reg, { token: admin }), { kind: "admin" });
 });
 
 // ---- server handleRequest (no socket) ------------------------------------
@@ -97,7 +109,7 @@ test("handleRequest: hello version mismatch is rejected", async () => {
 	const { store, cleanup } = fixtures();
 	try {
 		const server = new ControlServer({ store, auth: new PeerRegistry() });
-		const res = await server.handleRequest({ id: 1, method: "hello", params: { version: 999 } }, { unitId: "sales" }, null);
+		const res = await server.handleRequest({ id: 1, method: "hello", params: { version: 999 } }, { unitId: "sales", admin: false }, null);
 		assert.equal(res.ok, false);
 		assert.equal(res.ok === false ? res.error.code : "", "version_mismatch");
 	} finally {
@@ -114,11 +126,64 @@ test("handleRequest: a unit cannot complete a task it does not own", async () =>
 		// "ceo" is not the assignee ("sales" is) → forbidden.
 		const res = await server.handleRequest(
 			{ id: 2, method: "complete_task", params: { taskId: d.taskId, artifact: { summary: "x" } } },
-			{ unitId: "ceo" },
+			{ unitId: "ceo", admin: false },
 			d.taskId,
 		);
 		assert.equal(res.ok, false);
 		assert.equal(res.ok === false ? res.error.code : "", "forbidden");
+	} finally {
+		cleanup();
+	}
+});
+
+test("handleRequest: unit lists only its owner's approvals; admin sees all", async () => {
+	const { store, cleanup } = fixtures();
+	try {
+		const server = new ControlServer({ store, auth: new PeerRegistry() });
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "sell", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		const appr = store.escalate(d.taskId, "ship?", ["yes", "no"]); // owner = sales@co
+		// sales unit sees its own owner's approval.
+		const asSales = await server.handleRequest({ id: 1, method: "list_approvals", params: {} }, { unitId: "sales", admin: false }, null);
+		assert.ok(asSales.ok);
+		assert.deepEqual((asSales.ok ? (asSales.result as Array<{ id: string }>) : []).map((a) => a.id), [appr.id]);
+		// ceo unit does NOT own this approval → empty inbox.
+		const asCeo = await server.handleRequest({ id: 2, method: "list_approvals", params: {} }, { unitId: "ceo", admin: false }, null);
+		assert.ok(asCeo.ok);
+		assert.equal((asCeo.ok ? (asCeo.result as unknown[]) : []).length, 0);
+		// admin sees everything.
+		const asAdmin = await server.handleRequest({ id: 3, method: "list_approvals", params: {} }, { unitId: "", admin: true }, null);
+		assert.ok(asAdmin.ok);
+		assert.equal((asAdmin.ok ? (asAdmin.result as unknown[]) : []).length, 1);
+	} finally {
+		cleanup();
+	}
+});
+
+test("handleRequest: a unit cannot resolve an approval it does not own", async () => {
+	const { store, cleanup } = fixtures();
+	try {
+		const server = new ControlServer({ store, auth: new PeerRegistry() });
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "sell", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		const appr = store.escalate(d.taskId, "ship?", ["yes", "no"]); // owner = sales@co
+		// ceo unit tries to resolve sales' approval → forbidden.
+		const denied = await server.handleRequest(
+			{ id: 1, method: "resolve_approval", params: { id: appr.id, decision: "approved" } },
+			{ unitId: "ceo", admin: false },
+			null,
+		);
+		assert.equal(denied.ok, false);
+		assert.equal(denied.ok === false ? denied.error.code : "", "forbidden");
+		// admin can resolve it, and the task is re-opened as pending.
+		const okRes = await server.handleRequest(
+			{ id: 2, method: "resolve_approval", params: { id: appr.id, decision: "approved", choice: "yes" } },
+			{ unitId: "", admin: true },
+			null,
+		);
+		assert.ok(okRes.ok);
+		assert.equal(store.getApproval(appr.id)?.decidedBy, "admin");
+		assert.equal(store.getTask(d.taskId)?.status, "pending");
 	} finally {
 		cleanup();
 	}
@@ -162,6 +227,45 @@ test("SocketControlClient: unauthenticated when no credential maps", async () =>
 		await assert.rejects(() => client.connectAndHello(), /unauthenticated/);
 	} finally {
 		client.close();
+		await server.close();
+		cleanup();
+	}
+});
+
+test("AdminClient: list + resolve approvals over a real socket (ADR-0007)", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const adminToken = reg.issueAdminToken();
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "sell", contract: CONTRACT, budget: smallBudget });
+	assert.ok(d.ok);
+	const appr = store.escalate(d.ok ? d.taskId : "", "ship?", ["yes", "no"]);
+	const admin = new AdminClient({ socketPath, token: adminToken });
+	try {
+		const open = await admin.listApprovals();
+		assert.deepEqual(open.map((a) => a.id), [appr.id]);
+		const resolved = await admin.resolveApproval(appr.id, "denied");
+		assert.equal(resolved.status, "denied");
+		assert.equal(resolved.decidedBy, "admin");
+		// denial cancels the task.
+		assert.equal(store.getTask(d.ok ? d.taskId : "")?.status, "cancelled");
+	} finally {
+		admin.close();
+		await server.close();
+		cleanup();
+	}
+});
+
+test("AdminClient: a bad admin token is rejected at hello", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const server = new ControlServer({ store, auth: new PeerRegistry() });
+	await server.listen(socketPath);
+	const admin = new AdminClient({ socketPath, token: "nope" });
+	try {
+		await assert.rejects(() => admin.listApprovals(), /unauthenticated/);
+	} finally {
+		admin.close();
 		await server.close();
 		cleanup();
 	}

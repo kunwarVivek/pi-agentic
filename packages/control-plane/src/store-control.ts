@@ -464,7 +464,8 @@ export class ControlStore {
 		return (rows as Array<Record<string, unknown>>).map(rowToApproval);
 	}
 
-	/** Human (or parent owner) resolves an approval. */
+	/** Human (or parent owner) resolves an approval. Approving releases the task
+	 * for another attempt; denying cancels it and returns its reservation (FR5). */
 	resolveApproval(id: string, decision: "approved" | "denied", decidedBy: string, choice?: string): ApprovalRow {
 		const a = this.getApproval(id);
 		if (!a) throw new Error(`unknown approval ${id}`);
@@ -472,7 +473,33 @@ export class ControlStore {
 		this.db.prepare("UPDATE approvals SET status=?, decision=?, decided_by=? WHERE id=?")
 			.run(decision, choice ?? decision, decidedBy, id);
 		this.append("approval", decidedBy, `approval.${decision}`, id, { taskId: a.taskId, choice: choice ?? decision });
+		const t = this.getTask(a.taskId);
+		if (t && t.status === "escalated") {
+			if (decision === "approved") this.releaseTaskForRetry(t, decidedBy, id);
+			else this.cancelTask(t, `denied by ${decidedBy}`, decidedBy, id);
+		}
 		return this.getApproval(id) as ApprovalRow;
+	}
+
+	/** Approving an escalated task re-opens it as pending for another dispatch (FR5). */
+	private releaseTaskForRetry(t: TaskRow, decidedBy: string, approvalId: string): void {
+		this.setTaskStatus(t.id, "pending");
+		this.append("task", decidedBy, "task.approved", t.id, { approval: approvalId });
+	}
+
+	/** Denying (or a root-expired approval) cancels the task and returns its reservation. */
+	private cancelTask(t: TaskRow, reason: string, decidedBy: string, approvalId: string): void {
+		this.db.exec("BEGIN");
+		try {
+			this.db.prepare("UPDATE tasks SET status='cancelled', reason=?, updated_at=? WHERE id=?")
+				.run(reason, this.nowIso(), t.id);
+			this.releaseToParent(t);
+			this.db.exec("COMMIT");
+		} catch (e) {
+			this.db.exec("ROLLBACK");
+			throw e;
+		}
+		this.append("task", decidedBy, "task.denied", t.id, { approval: approvalId, reason });
 	}
 
 	/**
@@ -499,6 +526,7 @@ export class ControlStore {
 			} else {
 				this.db.prepare("UPDATE approvals SET status='expired', decision='denied' WHERE id=?").run(a.id);
 				this.append("approval", "control", "approval.expire", a.id, { taskId: a.taskId });
+				if (task && task.status === "escalated") this.cancelTask(task, "denied by timeout", "control", a.id);
 			}
 			n++;
 		}

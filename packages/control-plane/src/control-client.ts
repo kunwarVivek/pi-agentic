@@ -56,6 +56,10 @@ export interface ControlClient {
 	completeTask(taskId: string, artifact: unknown): Promise<CompleteResult>;
 	escalate(taskId: string, question: string, options: string[]): Promise<ApprovalRow>;
 	meter(taskId: string, usage: Budget): Promise<MeterResult>;
+	/** Open approvals this caller may act on (owner-scoped for a unit). */
+	listApprovals(): Promise<ApprovalRow[]>;
+	/** Approve or deny an open approval the caller owns. */
+	resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow>;
 	close(): void | Promise<void>;
 }
 
@@ -70,6 +74,8 @@ export abstract class BaseControlClient implements ControlClient {
 	abstract completeTask(taskId: string, artifact: unknown): Promise<CompleteResult>;
 	abstract escalate(taskId: string, question: string, options: string[]): Promise<ApprovalRow>;
 	abstract meter(taskId: string, usage: Budget): Promise<MeterResult>;
+	abstract listApprovals(): Promise<ApprovalRow[]>;
+	abstract resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow>;
 	abstract close(): void | Promise<void>;
 
 	currentTask(): TaskRow | null {
@@ -144,6 +150,16 @@ export class LocalControlClient extends BaseControlClient {
 
 	meter(taskId: string, usage: Budget): Promise<MeterResult> {
 		return Promise.resolve(this.store.meter(taskId, usage));
+	}
+
+	listApprovals(): Promise<ApprovalRow[]> {
+		const owner = this.store.getUnit(this.unitId)?.owner;
+		return Promise.resolve(owner ? this.store.listOpenApprovals(owner) : []);
+	}
+
+	resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow> {
+		const owner = this.store.getUnit(this.unitId)?.owner ?? this.unitId;
+		return Promise.resolve(this.store.resolveApproval(id, decision, owner, choice));
 	}
 
 	close(): void {

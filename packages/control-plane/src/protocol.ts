@@ -22,7 +22,9 @@ export type RpcMethod =
 	| "delegate"
 	| "complete_task"
 	| "escalate"
-	| "meter";
+	| "meter"
+	| "list_approvals"
+	| "resolve_approval";
 
 export interface RpcRequest {
 	/** Correlation id chosen by the client; echoed in the response. */
@@ -78,6 +80,12 @@ export interface EscalateParams {
 export interface MeterParams {
 	taskId: string;
 	usage: Budget;
+}
+
+export interface ResolveApprovalParams {
+	id: string;
+	decision: "approved" | "denied";
+	choice?: string;
 }
 
 // ---- framing -------------------------------------------------------------

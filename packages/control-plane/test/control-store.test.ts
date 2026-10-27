@@ -246,3 +246,53 @@ test("anchor export detects truncation and rewrite against the live chain", () =
 		cleanup();
 	}
 });
+
+test("approving an escalated task re-opens it as pending (ADR-0007)", () => {
+	const { store, cleanup } = fixtures();
+	try {
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "x", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		const appr = store.escalate(d.taskId, "ship it?", ["yes", "no"]);
+		assert.equal(store.getTask(d.taskId)?.status, "escalated");
+		store.resolveApproval(appr.id, "approved", "sales@co", "yes");
+		assert.equal(store.getTask(d.taskId)?.status, "pending");
+		// reservation is preserved for the retry
+		assert.deepEqual(store.getUnit("ceo")?.reserved, smallBudget);
+	} finally {
+		cleanup();
+	}
+});
+
+test("denying an escalated task cancels it and returns the reservation (ADR-0007)", () => {
+	const { store, cleanup } = fixtures();
+	try {
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "x", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		assert.deepEqual(store.getUnit("ceo")?.reserved, smallBudget);
+		const appr = store.escalate(d.taskId, "ship it?", ["yes", "no"]);
+		store.resolveApproval(appr.id, "denied", "sales@co");
+		assert.equal(store.getTask(d.taskId)?.status, "cancelled");
+		// reservation returned to the parent
+		assert.deepEqual(store.getUnit("ceo")?.reserved, { tokens: 0, costUsd: 0, wallClockSec: 0 });
+	} finally {
+		cleanup();
+	}
+});
+
+test("root TTL expiry cancels the task (no answer -> denied, G8)", () => {
+	const { store, advance, cleanup } = fixtures();
+	try {
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "x", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		const appr = store.escalate(d.taskId, "ship?", ["yes", "no"]);
+		advance(1001);
+		store.expireApprovals(); // reroute sales@co -> ceo@co
+		advance(1001);
+		store.expireApprovals(); // ceo is root -> denied
+		assert.equal(store.getApproval(appr.id)?.status, "expired");
+		assert.equal(store.getTask(d.taskId)?.status, "cancelled");
+		assert.deepEqual(store.getUnit("ceo")?.reserved, { tokens: 0, costUsd: 0, wallClockSec: 0 });
+	} finally {
+		cleanup();
+	}
+});

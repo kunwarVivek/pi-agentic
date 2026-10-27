@@ -9,6 +9,7 @@
  */
 
 import { bootstrap } from "./bootstrap.ts";
+import { installOrgApprovals } from "./org-approvals.ts";
 import { installOrgBudget } from "./org-budget.ts";
 import { installOrgContext } from "./org-context.ts";
 import { installOrgDelegate } from "./org-delegate.ts";
@@ -24,6 +25,7 @@ const extension: Extension = (pi: ExtensionAPI) => {
 	installOrgContext(pi, runtime);
 	installOrgTrust(pi, runtime, nearestRealpath);
 	installOrgBudget(pi, runtime);
+	installOrgApprovals(pi, runtime);
 };
 
 export default extension;

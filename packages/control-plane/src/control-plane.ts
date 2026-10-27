@@ -11,6 +11,7 @@
  *   ORG_CONTROL_DB       path to control.db          (required)
  *   ORG_CONTROL_SOCKET   Unix socket to listen on    (required)
  *   ORG_SWEEP_INTERVAL_MS  scheduler interval in ms  (optional, default 60000)
+ *   ORG_ADMIN_TOKEN_FILE   where to write the operator admin token (optional)
  *
  * The wiring is exposed as `startControlPlane` so an integration test can drive
  * it against a temp db and a fake clock; the `main()` guard runs it for real.
@@ -21,6 +22,7 @@ import { PeerRegistry } from "./auth.ts";
 import { Dispatcher, type WorkerSpawner } from "./dispatcher.ts";
 import { Scheduler } from "./scheduler.ts";
 import { ControlServer } from "./server.ts";
+import { writeFileSync } from "node:fs";
 
 export interface ControlPlaneOptions {
 	dbPath: string;
@@ -34,6 +36,8 @@ export interface ControlPlaneOptions {
 	spawner?: WorkerSpawner;
 	/** Injected clock for the store (default Date.now). Tests pass a fake. */
 	clock?: () => number;
+	/** When set, issue an operator admin token and write it mode-600 here (ADR-0007). */
+	adminTokenFile?: string;
 }
 
 export interface ControlPlane {
@@ -42,6 +46,8 @@ export interface ControlPlane {
 	server: ControlServer;
 	dispatcher: Dispatcher;
 	scheduler: Scheduler;
+	/** The operator admin token (human root), when one was issued. */
+	adminToken: string | null;
 	/** Stop the scheduler and close the socket. Does not delete control.db. */
 	stop(): Promise<void>;
 }
@@ -67,12 +73,21 @@ export async function startControlPlane(opts: ControlPlaneOptions): Promise<Cont
 	await server.listen(opts.socketPath);
 	if (opts.autoStart !== false) scheduler.start();
 
+	// The operator CLI (human root) authenticates with an admin token, written to
+	// a mode-600 file so only the control-plane user (and root) can read it.
+	let adminToken: string | null = null;
+	if (opts.adminTokenFile) {
+		adminToken = registry.issueAdminToken();
+		writeFileSync(opts.adminTokenFile, adminToken, { mode: 0o600 });
+	}
+
 	return {
 		store,
 		registry,
 		server,
 		dispatcher,
 		scheduler,
+		adminToken,
 		async stop() {
 			scheduler.stop();
 			await server.close();
@@ -92,7 +107,13 @@ function configFromEnv(): ControlPlaneOptions {
 	if (intervalMs !== undefined && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
 		throw new Error("ORG_SWEEP_INTERVAL_MS must be a positive number");
 	}
-	return { dbPath, socketPath, ...(intervalMs !== undefined ? { intervalMs } : {}) };
+	const adminTokenFile = process.env.ORG_ADMIN_TOKEN_FILE;
+	return {
+		dbPath,
+		socketPath,
+		...(intervalMs !== undefined ? { intervalMs } : {}),
+		...(adminTokenFile ? { adminTokenFile } : {}),
+	};
 }
 
 async function main(): Promise<void> {

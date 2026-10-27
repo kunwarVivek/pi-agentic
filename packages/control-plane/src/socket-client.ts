@@ -168,6 +168,16 @@ export class SocketControlClient extends BaseControlClient {
 		return (await this.call("meter", { taskId, usage })) as MeterResult;
 	}
 
+	async listApprovals(): Promise<ApprovalRow[]> {
+		await this.connectAndHello();
+		return (await this.call("list_approvals", {})) as ApprovalRow[];
+	}
+
+	async resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow> {
+		await this.connectAndHello();
+		return (await this.call("resolve_approval", { id, decision, ...(choice !== undefined ? { choice } : {}) })) as ApprovalRow;
+	}
+
 	close(): void {
 		this.failAll(new Error("client closed"));
 		this.sock?.end();

@@ -8,15 +8,16 @@ I/O-free core, every path default-deny, and an injected clock for testable time.
 
 ## Packages
 
-agentic-pi is an npm workspace of four independently publishable packages that
+agentic-pi is an npm workspace of five independently publishable packages that
 follow a strict, acyclic dependency DAG (ADR-0006):
 
 | Package | What it is | Depends on |
 |---|---|---|
 | [`@agentic-pi/core`](packages/core) | The pure kernel: manifest parsing, grant algebra, the policy PDP, the audit hash chain + off-host anchor, budget math, and the gate pipeline. No sqlite, no network, no `pi`. | — |
-| [`@agentic-pi/control-plane`](packages/control-plane) | The stateful host side: the single `control.db` writer (store), the JSON-lines RPC protocol + peer auth, the server, dispatcher and scheduler, the `pi-control` daemon, unit config, and the `ControlClient` library (in-process + unix-socket). | core |
-| [`@agentic-pi/extension`](packages/extension) | The loadable Pi extension: default-deny tool policy (PEP), secret redaction, the `org_delegate`/`org_complete`/`org_escalate` tools, identity/grants/budget context injection, grant-grounded project trust, and per-turn budget metering. | core, control-plane |
+| [`@agentic-pi/control-plane`](packages/control-plane) | The stateful host side: the single `control.db` writer (store), the JSON-lines RPC protocol + peer auth, the server, dispatcher and scheduler, the `pi-control` daemon, unit config, and the `ControlClient` library (in-process + unix-socket) plus the operator `AdminClient`. | core |
+| [`@agentic-pi/extension`](packages/extension) | The loadable Pi extension: default-deny tool policy (PEP), secret redaction, the `org_delegate`/`org_complete`/`org_escalate` tools, identity/grants/budget context injection, grant-grounded project trust, per-turn budget metering, and the `/approvals` command. | core, control-plane |
 | [`@agentic-pi/deploy`](packages/deploy) | Deployment generators: hardened systemd units (one Unix user per unit), bubblewrap sandbox argv from path grants, and the `org-render` CLI. | core, control-plane |
+| [`@agentic-pi/cli`](packages/cli) | The operator CLI (`org`): the human control-host tool for the approval inbox (`org approvals list\|approve\|deny`), a thin admin-token RPC client that never opens `control.db`. | core, control-plane |
 
 New functionality is added as a **new package** (or a new module inside one of
 these), never by growing the core — the core stays pure and dependency-free.
@@ -45,6 +46,20 @@ Load the extension in a dev Pi session (inert unless `ORG_UNIT_ID` +
 ```sh
 pi -e packages/extension/src/index.ts
 ```
+
+## The approval inbox
+
+Escalated tasks wait for a human decision (SPEC FR5/G8). Resolving an approval
+drives the task: **approve** re-opens it as `pending` for another attempt;
+**deny** (or a root TTL expiry — “no answer → denied”) cancels it and returns its
+budget reservation to the parent. The inbox is reachable two ways, both through
+the single control-plane writer:
+
+- Inside an owner's Pi session: `/approvals`, `/approvals approve <id> [choice]`,
+  `/approvals deny <id> [choice]` — scoped to that unit's owner.
+- On the control host: `org approvals list|approve|deny` (the `@agentic-pi/cli`
+  bin), authenticating with the operator admin token written by `pi-control` to
+  `ORG_ADMIN_TOKEN_FILE`.
 
 ## Deploy
 

@@ -19,3 +19,4 @@ export * from "./control-plane.ts";
 export * from "./unit-config.ts";
 export * from "./control-client.ts";
 export * from "./socket-client.ts";
+export * from "./admin-client.ts";

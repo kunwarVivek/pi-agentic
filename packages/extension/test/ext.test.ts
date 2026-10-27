@@ -339,3 +339,67 @@ test("handleTurnEnd meters usage and trips once over budget", async () => {
 		cleanup();
 	}
 });
+
+// ---- org-approvals (/approvals command, ADR-0007) -----------------------
+
+test("/approvals command lists and resolves owner-scoped approvals", async () => {
+	const { store, dbPath, cleanup } = makeOrg();
+	const pi = new FakePi();
+	try {
+		// sales has a task escalated to its owner (sales@co).
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "x", contract: CONTRACT, budget: { tokens: 10, costUsd: 1, wallClockSec: 1 } });
+		assert.ok(d.ok);
+		const appr = store.escalate(d.ok ? d.taskId : "", "ship?", ["yes", "no"]);
+
+		const runtime = bootstrap(pi, {
+			env: { [ENV_UNIT]: "sales", [ENV_DB]: dbPath },
+			openClient: () => new LocalControlClient({ unitId: "sales", taskId: null, store }),
+		});
+		const { installOrgApprovals } = await import("../src/org-approvals.ts");
+		installOrgApprovals(pi, runtime);
+		await pi.startSession();
+
+		const cmd = pi.commands.get("approvals") as { handler: (args: string, ctx: unknown) => Promise<void> };
+		assert.ok(cmd);
+		const notes: string[] = [];
+		const ctx = { ui: { notify: (m: string) => { notes.push(m); } } };
+
+		await cmd.handler("list", ctx);
+		assert.ok(notes.some((n) => n.includes(appr.id)), "list shows the owner's approval");
+
+		notes.length = 0;
+		await cmd.handler(`approve ${appr.id} yes`, ctx);
+		assert.ok(notes.some((n) => /approved/.test(n)));
+		assert.equal(store.getApproval(appr.id)?.status, "approved");
+		// approving re-opens the task as pending.
+		assert.equal(store.getTask(d.ok ? d.taskId : "")?.status, "pending");
+	} finally {
+		cleanup();
+	}
+});
+
+test("/approvals list shows nothing for a non-owning unit", async () => {
+	const { store, dbPath, cleanup } = makeOrg();
+	const pi = new FakePi();
+	try {
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "x", contract: CONTRACT, budget: { tokens: 10, costUsd: 1, wallClockSec: 1 } });
+		assert.ok(d.ok);
+		store.escalate(d.ok ? d.taskId : "", "ship?", ["yes", "no"]); // owner sales@co
+
+		// ceo opens its own inbox — the approval is owned by sales@co, not ceo@co.
+		const runtime = bootstrap(pi, {
+			env: { [ENV_UNIT]: "ceo", [ENV_DB]: dbPath },
+			openClient: () => new LocalControlClient({ unitId: "ceo", taskId: null, store }),
+		});
+		const { installOrgApprovals } = await import("../src/org-approvals.ts");
+		installOrgApprovals(pi, runtime);
+		await pi.startSession();
+
+		const cmd = pi.commands.get("approvals") as { handler: (args: string, ctx: unknown) => Promise<void> };
+		const notes: string[] = [];
+		await cmd.handler("list", { ui: { notify: (m: string) => { notes.push(m); } } });
+		assert.deepEqual(notes, ["no open approvals"]);
+	} finally {
+		cleanup();
+	}
+});

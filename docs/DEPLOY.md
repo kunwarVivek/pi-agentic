@@ -70,6 +70,33 @@ done
 systemctl start pi-control.service
 ```
 
+To enable the operator approval inbox, point `pi-control` at an admin-token file
+(add `Environment=ORG_ADMIN_TOKEN_FILE=/var/lib/org/admin.token` to
+`pi-control.service`, inside the `StateDirectory`). On start it writes a fresh
+mode-600 token there. See the approval inbox section below.
+
+## Approval inbox
+
+Escalated tasks route to a human (SPEC FR5/G8). Resolving an approval drives the
+task: approve re-opens it as `pending`; deny (or a root TTL expiry) cancels it
+and returns its reserved budget to the parent. Both paths go through the control
+plane — nothing else writes `control.db` (ADR-0007).
+
+The operator CLI (`@agentic-pi/cli`, bin `org`) is a thin admin-token RPC client
+run on the control host:
+
+```sh
+export ORG_CONTROL_SOCKET=/var/lib/org/control.sock
+export ORG_ADMIN_TOKEN_FILE=/var/lib/org/admin.token   # written by pi-control
+
+org approvals list
+org approvals approve <approval-id> [choice]
+org approvals deny <approval-id> [choice]
+```
+
+The admin token grants whole-inbox access, so keep the file mode-600 and readable
+only by the operator. A unit owner can instead resolve just their own approvals
+from inside their Pi session with the `/approvals` command (owner-scoped).
 ## bash sandbox (bubblewrap)
 
 A worker's `bash` must be wrapped with `bwrap`, built from the unit's path

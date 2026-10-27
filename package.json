@@ -8,7 +8,8 @@
     "packages/core",
     "packages/control-plane",
     "packages/extension",
-    "packages/deploy"
+    "packages/deploy",
+    "packages/cli"
   ],
   "scripts": {
     "typecheck": "tsc --build && tsc -p tsconfig.tests.json",

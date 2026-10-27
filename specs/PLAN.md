@@ -2,11 +2,12 @@
 
 Each slice is vertical: it has code, tests and a demo. Slice N+1 starts only after slice N passes `npm run check`.
 
-**Repo layout (ADR-0006):** an npm workspace of five publishable packages —
+**Repo layout (ADR-0006):** an npm workspace of six publishable packages —
 `@agentic-pi/core` (pure kernel), `@agentic-pi/control-plane` (store + RPC +
 dispatcher + scheduler + `pi-control` daemon + `ControlClient`),
-`@agentic-pi/extension` (the loadable Pi extension), and `@agentic-pi/deploy`
-(systemd + bwrap + `org-render` CLI). Source paths below are historical
+`@agentic-pi/extension` (the loadable Pi extension), `@agentic-pi/deploy`
+(systemd + bwrap + `org-render` CLI), `@agentic-pi/cli` (the `org` operator
+CLI), and `@agentic-pi/evals` (the eval runner). Source paths below are historical
 (`src/...`); current paths are `packages/<pkg>/src/...`. Dev/tests run `.ts`
 directly via the `development` export condition; `npm run build` emits `dist/`.
 
@@ -22,6 +23,10 @@ directly via the `development` export condition; `npm run build` emits `dist/`.
 | **S7 Human inbox** | `org approvals` CLI + `/approvals` Pi command; Slack or web later | Approve and deny round trip |
 
 Done: S0 + S1 (17 tests) + S2 control store (10 integration tests, 27 total) + S3 Pi extensions (15 hook tests, 42 total) + S4 Control-plane RPC + dispatcher (10 tests, 52 total) + S5 Lifecycle + scheduler (9 tests, 61 total) + S6 Hardening (14 tests, 75 total) + Modular packaging (ADR-0006: 4-package workspace, 75 tests preserved) + S7 Human inbox (16 tests, 91 total). All slices S0–S7 complete.
+
+Post-S7 capability packages (keeping the core minimal, each new capability is a package — ADR-0006 DAG preserved):
+
+Eval runner (ADR-0008, `@agentic-pi/evals`, 11 tests, 102 total): closes the FR8 lifecycle loop that was previously unreachable — the store *consumed* eval pass rates (`sweepLifecycle` deprecates a unit below `min_eval`) but nothing *produced* them. `runSuite(suite, solve)` grades an injectable `Solver`'s output against each case's gate `Contract` (schema→rules→judge, reusing `@agentic-pi/core`), so it is pure and `pi`-free. A throwing solver is a failed case, never a crashed suite; cases run sequentially for determinism. `parseSuite` loads suites from fail-closed JSON (same discipline as `unit.json`; judges are code not data — a case carries `contract.judge:true`, the `JudgeFn` is wired after loading). `runAndRecord(recorder, unitId, suite, solve)` runs the suite then records the pass count through the narrow `EvalRecorder.recordEval` slice of the store (an empty 0/0 suite records nothing). End-to-end test: a 1/4 run records rate 0.25, then `sweepLifecycle` deprecates a unit with `min_eval` 0.8.
 
 S7 Human inbox (ADR-0007): the approval round trip now drives the task state machine — `resolveApproval` moves an escalated task to `pending` on **approved** (eligible for re-dispatch) and to `cancelled` with its budget reservation returned to the parent on **denied**; a root TTL expiry in `expireApprovals` cancels the task the same way, so “no answer → denied” (G8) is observable on the task, not just the approval. Two owner-scoped RPC methods join the protocol: `list_approvals` and `resolve_approval`. A connection authenticated as a **unit** sees/resolves only approvals whose `owner` matches that unit's owner; an **admin** principal (a separate mode-600 admin token issued by the control plane, `ORG_ADMIN_TOKEN_FILE`) sees and resolves any approval (`decidedBy="admin"`). The inbox is reachable two ways, both through the single writer: the `/approvals` Pi command (owner-scoped, inside the owner's session) and a new `@agentic-pi/cli` package (bin `org`, `org approvals list|approve|deny`) that is a thin `AdminClient` RPC client — it never opens control.db. A future Slack/web UI is just another admin-token client; no schema or protocol change needed.
 

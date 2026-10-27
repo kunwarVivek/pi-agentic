@@ -1,0 +1,24 @@
+{
+  "name": "@agentic-pi/evals",
+  "version": "0.1.0",
+  "description": "agentic-pi eval runner: run a unit's eval suite (prompt cases checked against gate contracts) with an injectable solver, then record the pass rate through the control plane so FR8 lifecycle can deprecate under-performing units.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "files": ["dist", "src", "!**/*.test.ts"],
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentic-pi/core": "0.1.0",
+    "@agentic-pi/control-plane": "0.1.0"
+  }
+}

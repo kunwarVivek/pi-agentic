@@ -8,7 +8,7 @@ I/O-free core, every path default-deny, and an injected clock for testable time.
 
 ## Packages
 
-agentic-pi is an npm workspace of five independently publishable packages that
+agentic-pi is an npm workspace of six independently publishable packages that
 follow a strict, acyclic dependency DAG (ADR-0006):
 
 | Package | What it is | Depends on |
@@ -18,6 +18,7 @@ follow a strict, acyclic dependency DAG (ADR-0006):
 | [`@agentic-pi/extension`](packages/extension) | The loadable Pi extension: default-deny tool policy (PEP), secret redaction, the `org_delegate`/`org_complete`/`org_escalate` tools, identity/grants/budget context injection, grant-grounded project trust, per-turn budget metering, and the `/approvals` command. | core, control-plane |
 | [`@agentic-pi/deploy`](packages/deploy) | Deployment generators: hardened systemd units (one Unix user per unit), bubblewrap sandbox argv from path grants, and the `org-render` CLI. | core, control-plane |
 | [`@agentic-pi/cli`](packages/cli) | The operator CLI (`org`): the human control-host tool for the approval inbox (`org approvals list\|approve\|deny`), a thin admin-token RPC client that never opens `control.db`. | core, control-plane |
+| [`@agentic-pi/evals`](packages/evals) | The eval runner: grades an injectable solver's output against gate contracts (`runSuite`), loads suites from fail-closed JSON (`parseSuite`), and records the pass rate through the control plane (`runAndRecord`) so FR8 lifecycle can deprecate under-performing units. | core, control-plane |
 
 New functionality is added as a **new package** (or a new module inside one of
 these), never by growing the core — the core stays pure and dependency-free.

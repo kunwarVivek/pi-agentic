@@ -9,7 +9,8 @@
     "packages/control-plane",
     "packages/extension",
     "packages/deploy",
-    "packages/cli"
+    "packages/cli",
+    "packages/evals"
   ],
   "scripts": {
     "typecheck": "tsc --build && tsc -p tsconfig.tests.json",

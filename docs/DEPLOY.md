@@ -18,16 +18,31 @@ pi-control      long-running control plane (sole control.db writer)
 pi-u-<id>       one dedicated Unix user per unit worker
 ```
 
+## Build the packages
+
+agentic-pi ships as an npm workspace of four packages (see ADR-0006). Build the
+publishable `dist/` output once per host:
+
+```sh
+cd /opt/agentic-pi
+npm install
+npm run build   # tsc --build across @agentic-pi/{core,control-plane,extension,deploy}
+```
+
+The `pi-control` daemon and the `org-render` CLI are the built `bin` entrypoints
+of `@agentic-pi/control-plane` and `@agentic-pi/deploy` respectively.
+
 ## Render the systemd units
 
-Unit files are generated from a live `control.db` — pure text, no secrets:
+Unit files are generated from a live `control.db` — pure text, no secrets. The
+`ORG_ENTRYPOINT` is the BUILT control-plane entrypoint (what actually ships):
 
 ```sh
 ORG_CONTROL_SOCKET=/var/lib/org/control.sock \
 ORG_WORKSPACE_ROOT=/srv/org \
-ORG_ENTRYPOINT=/opt/agentic-pi/src/rpc/control-plane.ts \
+ORG_ENTRYPOINT=/opt/agentic-pi/packages/control-plane/dist/control-plane.js \
 ORG_NODE_BIN="$(command -v node)" \
-node src/deploy/render.ts /var/lib/org/control.db /etc/systemd/system
+node packages/deploy/dist/render.js /var/lib/org/control.db /etc/systemd/system
 systemctl daemon-reload
 ```
 
@@ -58,7 +73,7 @@ systemctl start pi-control.service
 ## bash sandbox (bubblewrap)
 
 A worker's `bash` must be wrapped with `bwrap`, built from the unit's path
-grants by `src/deploy/bwrap.ts`:
+grants by `@agentic-pi/deploy` (`packages/deploy/src/bwrap.ts`):
 
 - `--unshare-all` (user/pid/ipc/uts/cgroup/net), `--die-with-parent`, `--cap-drop ALL`;
 - read-only system roots (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc`);
@@ -77,7 +92,7 @@ requires exporting a small **anchor** off-host periodically:
 
 ```sh
 # Export (store the JSON somewhere the control host cannot rewrite):
-node -e "import('./src/store/control.ts').then(async ({ControlStore})=>{const s=new ControlStore(process.argv[1],{});process.stdout.write(JSON.stringify(s.exportAnchor()));s.close();})" /var/lib/org/control.db > anchor.json
+node -e "import('@agentic-pi/control-plane').then(async ({ControlStore})=>{const s=new ControlStore(process.argv[1],{});process.stdout.write(JSON.stringify(s.exportAnchor()));s.close();})" /var/lib/org/control.db > anchor.json
 ```
 
 Later, `store.verifyAnchor(anchor)` returns `truncated`, `head_mismatch`,

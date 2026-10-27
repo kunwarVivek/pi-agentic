@@ -2,6 +2,14 @@
 
 Each slice is vertical: it has code, tests and a demo. Slice N+1 starts only after slice N passes `npm run check`.
 
+**Repo layout (ADR-0006):** an npm workspace of four publishable packages —
+`@agentic-pi/core` (pure kernel), `@agentic-pi/control-plane` (store + RPC +
+dispatcher + scheduler + `pi-control` daemon + `ControlClient`),
+`@agentic-pi/extension` (the loadable Pi extension), and `@agentic-pi/deploy`
+(systemd + bwrap + `org-render` CLI). Source paths below are historical
+(`src/...`); current paths are `packages/<pkg>/src/...`. Dev/tests run `.ts`
+directly via the `development` export condition; `npm run build` emits `dist/`.
+
 | Slice | Scope | Exit criteria |
 |---|---|---|
 | **S0 Scaffold** | Package layout, tsconfig, `node:test`, lint scripts, docs | `npm run check` is green |
@@ -13,7 +21,9 @@ Each slice is vertical: it has code, tests and a demo. Slice N+1 starts only aft
 | **S6 Hardening** | systemd units with a Unix user per unit, bubblewrap/Gondolin for bash, audit anchor export | Linux VM smoke test |
 | **S7 Human inbox** | `org approvals` CLI + `/approvals` Pi command; Slack or web later | Approve and deny round trip |
 
-Done: S0 + S1 (17 tests) + S2 control store (10 integration tests, 27 total) + S3 Pi extensions (15 hook tests, 42 total) + S4 Control-plane RPC + dispatcher (10 tests, 52 total) + S5 Lifecycle + scheduler (9 tests, 61 total) + S6 Hardening (14 tests, 75 total). Next: S7 Human inbox.
+Done: S0 + S1 (17 tests) + S2 control store (10 integration tests, 27 total) + S3 Pi extensions (15 hook tests, 42 total) + S4 Control-plane RPC + dispatcher (10 tests, 52 total) + S5 Lifecycle + scheduler (9 tests, 61 total) + S6 Hardening (14 tests, 75 total) + Modular packaging (ADR-0006: 4-package workspace, 75 tests preserved). Next: S7 Human inbox.
+
+Modular packaging (post-S6): split the single private `agentic-pi` package into an npm workspace of four publishable packages following the real dependency DAG — `@agentic-pi/core` → (nothing); `@agentic-pi/control-plane` → core; `@agentic-pi/extension` → core + control-plane; `@agentic-pi/deploy` → core + control-plane. The `ControlClient` library (`control-client.ts`/`socket-client.ts`) and `unit-config.ts` moved into control-plane (they need the store + wire protocol; the extension consumes only the `ControlClient` interface, so the edge stays one-directional). Each package has its own `package.json` (public name, `exports` with a `development`→`src` + default→`dist` condition, `files`, `bin` where relevant), `tsconfig.json` extending `tsconfig.base.json` with project references. `pi-control` is the `@agentic-pi/control-plane` bin; `org-render` is the `@agentic-pi/deploy` bin (both got a `#!/usr/bin/env node` shebang). `@earendil-works/pi-coding-agent` is an OPTIONAL peer dep of the extension; the local `pi-api.ts` shim stays as the zero-dep structural fallback. Build = `tsc --build` with `rewriteRelativeImportExtensions` so emitted `.js` carry `.js` specifiers; dev/tests run `.ts` via `--conditions development --experimental-strip-types` (no build). All 75 tests pass unchanged, `npm audit` 0 vulns, `npm pack --dry-run` confirms dist+src and no test files shipped, the three non-root smoke helpers still produce identical output. `scripts/smoke.sh` updated to use `$NODE_RUN` (dev condition + strip-types) for helpers and the built `dist/control-plane.js` as the installed daemon entrypoint.
 
 S6 modules: `src/core/audit.ts` gained the off-host anchor primitives — `buildAnchor(entries,at)→AuditAnchor{count,headSeq,headHash,at,anchorHash}`, `anchorIsIntact(a)` (own-integrity hash, constant-time hex compare), and `verifyAgainstAnchor(entries,anchor)→AnchorCheck` returning `truncated`/`head_mismatch`/`chain_invalid`/`anchor_corrupt` so a full-chain rewrite is detectable against an anchor exported elsewhere. `ControlStore` gained `exportAnchor()` + `verifyAnchor(anchor)`. `src/deploy/systemd.ts` renders a hardened `pi-control.service` and a per-unit `pi-unit@<id>.service` template (user `pi-u-<id>`, `NoNewPrivileges`/`ProtectSystem=strict`/`ReadWritePaths`=workspace only/`RestrictAddressFamilies=AF_UNIX`/empty caps; `SystemCallFilter` blocks `@process` for units without `tool:bash`). `src/deploy/bwrap.ts` turns a unit's path grants into a `bwrap` argv (`--unshare-all --cap-drop ALL`, ro system roots, workspace rw, each `path:rw`/`path:r` grant bound by mode and nothing else). `src/deploy/render.ts` maps a live `control.db` to `{filename:content}` unit files (CLI writes them out, bash flagged from grants, `%i` task specifier). `docs/DEPLOY.md` documents the OS boundary; `scripts/smoke.sh` is the manual Linux/systemd/bwrap S6 gate with helper scripts `seed-smoke-org.ts`/`smoke-e2e.ts`/`smoke-bwrap.ts`/`smoke-anchor.ts` (the three non-root helpers verified end-to-end on macOS).
 

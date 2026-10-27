@@ -1,0 +1,20 @@
+{
+  "name": "@agentic-pi/core",
+  "version": "0.1.0",
+  "description": "Pure, I/O-free kernel for agentic-pi: manifests, grants, policy PDP, audit hash chain + anchor, budget math, gate pipeline. Zero runtime dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "files": ["dist", "src", "!**/*.test.ts"],
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit"
+  }
+}

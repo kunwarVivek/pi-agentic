@@ -4,9 +4,17 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },
+  "workspaces": [
+    "packages/core",
+    "packages/control-plane",
+    "packages/extension",
+    "packages/deploy"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types 'test/**/*.test.ts'",
+    "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "node --conditions development --experimental-strip-types --test 'packages/*/test/**/*.test.ts'",
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {

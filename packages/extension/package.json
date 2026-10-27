@@ -1,0 +1,30 @@
+{
+  "name": "@agentic-pi/extension",
+  "version": "0.1.0",
+  "description": "Loadable Pi extension for agentic-pi: default-deny tool policy (PEP), secret redaction, org delegate/complete/escalate tools, identity/grants/budget context injection, grant-grounded project trust, and per-turn budget metering.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "files": ["dist", "src", "!**/*.test.ts"],
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentic-pi/core": "0.1.0",
+    "@agentic-pi/control-plane": "0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true }
+  }
+}

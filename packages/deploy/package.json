@@ -1,0 +1,27 @@
+{
+  "name": "@agentic-pi/deploy",
+  "version": "0.1.0",
+  "description": "agentic-pi deployment generators: hardened systemd unit files (one Unix user per unit), bubblewrap sandbox argv from a unit's path grants, and a render CLI that turns a live control.db into installable unit files.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "files": ["dist", "src", "!**/*.test.ts"],
+  "bin": {
+    "org-render": "./dist/render.js"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentic-pi/core": "0.1.0",
+    "@agentic-pi/control-plane": "0.1.0"
+  }
+}

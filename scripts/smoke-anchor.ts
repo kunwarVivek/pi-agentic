@@ -5,7 +5,7 @@
  *   node scripts/smoke-anchor.ts <control.db>
  */
 import { DatabaseSync } from "node:sqlite";
-import { ControlStore } from "../src/store/control.ts";
+import { ControlStore } from "@agentic-pi/control-plane";
 
 const db = process.argv[2];
 if (!db) {

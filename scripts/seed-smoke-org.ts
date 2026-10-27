@@ -5,8 +5,8 @@
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { ControlStore } from "../src/store/control.ts";
-import { parseManifest } from "../src/core/manifest.ts";
+import { ControlStore } from "@agentic-pi/control-plane";
+import { parseManifest } from "@agentic-pi/core";
 
 const [db, root] = process.argv.slice(2);
 if (!db || !root) {

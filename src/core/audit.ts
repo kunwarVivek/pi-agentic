@@ -63,3 +63,80 @@ export function verify(entries: readonly ChainedEntry[]): VerifyResult {
 	}
 	return { ok: true, count: entries.length };
 }
+
+/**
+ * An audit anchor (SPEC G6 / threats): a small off-host snapshot of the chain
+ * head. Exporting it periodically makes a full-chain rewrite detectable — an
+ * attacker who rebuilds history locally cannot match an anchor already written
+ * elsewhere. The anchor is itself integrity-checked with its own hash so a
+ * tampered anchor file is rejected too.
+ */
+export interface AuditAnchor {
+	/** Number of entries covered (the head's seq). */
+	count: number;
+	/** Head entry seq (0 when the chain is empty). */
+	headSeq: number;
+	/** Head entry hash (GENESIS when the chain is empty). */
+	headHash: string;
+	/** ISO timestamp the anchor was produced. */
+	at: string;
+	/** Integrity hash over the anchor's own fields. */
+	anchorHash: string;
+}
+
+function anchorPayload(count: number, headSeq: number, headHash: string, at: string): string {
+	return canonicalJson({ count, headSeq, headHash, at });
+}
+
+/** Produce an anchor for the current chain head. `at` is injected for determinism. */
+export function buildAnchor(entries: readonly ChainedEntry[], at: string): AuditAnchor {
+	const head = entries.at(-1);
+	const headSeq = head ? head.seq : 0;
+	const headHash = head ? head.hash : GENESIS;
+	const count = entries.length;
+	const anchorHash = createHash("sha256").update(anchorPayload(count, headSeq, headHash, at)).digest("hex");
+	return { count, headSeq, headHash, at, anchorHash };
+}
+
+/** True when the anchor's own integrity hash matches its fields. */
+export function anchorIsIntact(a: AuditAnchor): boolean {
+	const expected = createHash("sha256").update(anchorPayload(a.count, a.headSeq, a.headHash, a.at)).digest("hex");
+	return timingSafeHexEqual(expected, a.anchorHash);
+}
+
+export type AnchorCheck =
+	| { ok: true; count: number }
+	| { ok: false; reason: "anchor_corrupt" | "truncated" | "head_mismatch" | "chain_invalid"; detail: string };
+
+/**
+ * Verify a chain is a faithful continuation of a previously-exported anchor:
+ *   - the anchor file itself is intact,
+ *   - the chain still has at least `anchor.count` entries (no truncation),
+ *   - the entry at `anchor.headSeq` still hashes to `anchor.headHash` (history
+ *     up to the anchor was not rewritten),
+ *   - and the whole chain verifies.
+ */
+export function verifyAgainstAnchor(entries: readonly ChainedEntry[], anchor: AuditAnchor): AnchorCheck {
+	if (!anchorIsIntact(anchor)) return { ok: false, reason: "anchor_corrupt", detail: "anchor integrity hash mismatch" };
+	const v = verify(entries);
+	if (!v.ok) return { ok: false, reason: "chain_invalid", detail: `bad seq ${v.badSeq}: ${v.reason}` };
+	if (entries.length < anchor.count) {
+		return { ok: false, reason: "truncated", detail: `chain has ${entries.length} entries, anchor covers ${anchor.count}` };
+	}
+	if (anchor.headSeq > 0) {
+		// Entries are seq-ordered from 1, so the anchored head sits at index headSeq-1.
+		const at = entries[anchor.headSeq - 1];
+		if (!at || at.seq !== anchor.headSeq || !timingSafeHexEqual(at.hash, anchor.headHash)) {
+			return { ok: false, reason: "head_mismatch", detail: `entry at seq ${anchor.headSeq} does not match the anchor` };
+		}
+	}
+	return { ok: true, count: entries.length };
+}
+
+/** Constant-time compare for equal-length hex digests (avoids early-exit leaks). */
+function timingSafeHexEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
+}

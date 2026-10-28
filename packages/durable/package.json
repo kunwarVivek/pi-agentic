@@ -1,0 +1,56 @@
+{
+	"name": "pi-agentic-durable",
+	"version": "0.1.0",
+	"description": "agentic-pi durable worker: one pi-durable Harness per task (single-owner SQLite storage), with org policy (PEP), redaction, budget metering and delegate/complete/escalate tools.",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunwarVivek/pi-agentic.git",
+		"directory": "packages/durable"
+	},
+	"homepage": "https://github.com/kunwarVivek/pi-agentic#readme",
+	"bugs": {
+		"url": "https://github.com/kunwarVivek/pi-agentic/issues"
+	},
+	"keywords": [
+		"agentic-pi",
+		"durable",
+		"worker",
+		"pi-durable"
+	],
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"bin": {
+		"agentic-pi-durable-worker": "./dist/worker.js"
+	},
+	"exports": {
+		".": {
+			"development": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"typecheck": "tsc --noEmit",
+		"prepack": "tsc --build"
+	},
+	"dependencies": {
+		"pi-agentic-control-plane": "0.1.0",
+		"pi-agentic-core": "0.1.0",
+		"pi-agentic": "0.1.0",
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0"
+	}
+}

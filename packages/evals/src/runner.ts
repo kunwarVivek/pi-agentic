@@ -8,12 +8,12 @@
  * control plane so lifecycle can act on it.
  *
  * A suite is a list of cases. Each case is a prompt plus the gate `Contract`
- * (schema -> rules -> judge, from @agentic-pi/core) the produced artifact must
+ * (schema -> rules -> judge, from pi-agentic-core) the produced artifact must
  * pass. A `Solver` turns a prompt into an artifact; it is injected so the pure
  * runner never depends on `pi` or the network (a real solver spawns a worker,
  * a test solver returns canned output).
  */
-import { type Contract, type GateResult, type JudgeFn, runGates } from "@agentic-pi/core";
+import { type Contract, type GateResult, type JudgeFn, runGates } from "pi-agentic-core";
 
 /** One eval case: a prompt and the gate the produced artifact must pass. */
 export interface EvalCase {
@@ -43,9 +43,9 @@ export type Solver = (caseItem: EvalCase) => Promise<unknown>;
 export interface CaseResult {
 	id: string;
 	pass: boolean;
-	/** The gate result, or null when the solver itself threw. */
+	/** The gate result, or null when the solver or gate/judge threw. */
 	gate: GateResult | null;
-	/** Failure reasons (gate reasons, or the solver error message). */
+	/** Failure reasons (gate reasons, or the solver/gate error message). */
 	reasons: string[];
 }
 
@@ -79,7 +79,14 @@ export async function runSuite(suite: EvalSuite, solve: Solver): Promise<SuiteRe
 			cases.push({ id: c.id, pass: false, gate: null, reasons: [`solver failed: ${(e as Error).message}`] });
 			continue;
 		}
-		const gate = await runGates(c.contract, artifact, judge);
+		let gate: GateResult;
+		try {
+			gate = await runGates(c.contract, artifact, judge);
+		} catch (e) {
+			// Fail closed: a throwing gate/judge is a failed case, never a suite abort.
+			cases.push({ id: c.id, pass: false, gate: null, reasons: [`gate failed: ${(e as Error).message}`] });
+			continue;
+		}
 		if (gate.pass) {
 			passed++;
 			cases.push({ id: c.id, pass: true, gate, reasons: [] });

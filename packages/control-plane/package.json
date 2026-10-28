@@ -1,31 +1,57 @@
 {
-  "name": "@agentic-pi/control-plane",
-  "version": "0.1.0",
-  "description": "agentic-pi control plane: the single control.db writer (store), JSON-lines RPC server, peer auth, dispatcher, scheduler, the pi-control daemon entrypoint, and the ControlClient library (local + unix-socket).",
-  "license": "MIT",
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "files": ["dist", "src", "!**/*.test.ts"],
-  "bin": {
-    "pi-control": "./dist/control-plane.js"
-  },
-  "exports": {
-    ".": {
-      "development": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./control-plane": {
-      "development": "./src/control-plane.ts",
-      "types": "./dist/control-plane.d.ts",
-      "default": "./dist/control-plane.js"
-    }
-  },
-  "scripts": {
-    "build": "tsc --build",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@agentic-pi/core": "0.1.0"
-  }
+	"name": "pi-agentic-control-plane",
+	"version": "0.1.0",
+	"description": "agentic-pi control plane: the single control.db writer (store), JSON-lines RPC server, peer auth, dispatcher, scheduler, the pi-control daemon entrypoint, and the ControlClient library (local + unix-socket).",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunwarVivek/pi-agentic.git",
+		"directory": "packages/control-plane"
+	},
+	"homepage": "https://github.com/kunwarVivek/pi-agentic#readme",
+	"bugs": {
+		"url": "https://github.com/kunwarVivek/pi-agentic/issues"
+	},
+	"keywords": [
+		"agentic-pi",
+		"control-plane",
+		"json-rpc",
+		"sqlite",
+		"scheduler"
+	],
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"bin": {
+		"pi-control": "./dist/control-plane.js"
+	},
+	"exports": {
+		".": {
+			"development": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./control-plane": {
+			"development": "./src/control-plane.ts",
+			"types": "./dist/control-plane.d.ts",
+			"default": "./dist/control-plane.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"typecheck": "tsc --noEmit",
+		"prepack": "tsc --build"
+	},
+	"dependencies": {
+		"pi-agentic-core": "0.1.0"
+	}
 }

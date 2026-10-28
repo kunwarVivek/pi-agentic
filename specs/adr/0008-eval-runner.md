@@ -14,14 +14,14 @@ already *consumed* this signal: `ControlStore.sweepLifecycle` reads
 feeding them, so the deprecation branch was unreachable in practice.
 
 The SPEC roadmap (step 3, "Harness first") lists an "eval runner" alongside
-`org-policy` and the gates. The gates (`@agentic-pi/core`) are exactly the right
+`org-policy` and the gates. The gates (`pi-agentic-core`) are exactly the right
 grading primitive: an eval case is a prompt plus the same `Contract`
 (schema → rules → judge) that `complete_task` already grades real artifacts
 against.
 
 ## Decision
 
-Add `@agentic-pi/evals`, a sixth workspace package depending only on `core`
+Add `pi-agentic-evals`, a sixth workspace package depending only on `core`
 (gates) and `control-plane` (the recorder), consistent with the ADR-0006 DAG.
 
 1. **The runner is pure and `pi`-free.** `runSuite(suite, solve)` grades a

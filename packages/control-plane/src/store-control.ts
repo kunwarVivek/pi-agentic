@@ -10,13 +10,13 @@
  */
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { type AuditAnchor, type AnchorCheck, type ChainedEntry, GENESIS, buildAnchor, canonicalJson, chain, verify, verifyAgainstAnchor } from "@agentic-pi/core";
-import { add, sub, exhausted, fits, remaining } from "@agentic-pi/core";
-import { ZERO } from "@agentic-pi/core";
-import { type Contract, type GateResult, type JudgeFn, runGates } from "@agentic-pi/core";
-import { type Grant, effectiveGrants, formatGrant, parseGrants } from "@agentic-pi/core";
-import type { Budget, Manifest } from "@agentic-pi/core";
-import { type DelegationCheck, type OrgSnapshot, type UnitStatus, checkDelegation } from "@agentic-pi/core";
+import { type AuditAnchor, type AnchorCheck, type ChainedEntry, GENESIS, buildAnchor, canonicalJson, chain, verify, verifyAgainstAnchor } from "pi-agentic-core";
+import { add, sub, exhausted, fits, remaining } from "pi-agentic-core";
+import { ZERO } from "pi-agentic-core";
+import { type Contract, type GateResult, type JudgeFn, runGates } from "pi-agentic-core";
+import { type Grant, effectiveGrants, formatGrant, parseGrants } from "pi-agentic-core";
+import type { Budget, Decision, Manifest, ToolRequest } from "pi-agentic-core";
+import { type DelegationCheck, type OrgSnapshot, type UnitStatus, checkDelegation } from "pi-agentic-core";
 
 export type TaskStatus = "pending" | "running" | "done" | "rejected" | "escalated" | "cancelled";
 export type ApprovalStatus = "open" | "approved" | "denied" | "expired";
@@ -32,10 +32,17 @@ export interface TaskRow {
 	contract: Contract;
 	grants: Grant[] | null;
 	budget: Budget;
+	used: Budget;
 	deadline: string | null;
 	status: TaskStatus;
 	parentTask: string | null;
 	attempts: number;
+	/**
+	 * Resume generation: 0 at creation, +1 on every re-queue of a settled task
+	 * (approved escalation, retry of a rejected task). Workers key their
+	 * continuation submission on it, so one re-queue yields exactly one continuation.
+	 */
+	generation: number;
 	reason: string | null;
 	artifactHash: string | null;
 	createdAt: string;
@@ -53,9 +60,26 @@ export interface ApprovalRow {
 	decidedBy: string | null;
 	expiresAt: string;
 	createdAt: string;
+	/** Unit currently holding the approval (climbs by unit id on expiry); null only for pre-migration orphans. */
+	holderUnitId: string | null;
 }
 
-export interface UnitRow extends Manifest {
+export type NotificationKind = "task.done" | "task.escalated" | "task.rejected" | "unit.lifecycle";
+
+/** A queued message for a unit (FR4 parent notification, FR8 lifecycle). */
+export interface NotificationRow {
+	id: string;
+	unitId: string;
+	kind: NotificationKind;
+	subject: string;
+	data: JsonValue;
+	createdAt: string;
+	ackedAt: string | null;
+	/** Owner of the addressed unit at notification time (owner inbox, FR8); null for rows predating the column. */
+	owner: string | null;
+}
+
+export interface UnitRow extends Omit<Manifest, "secrets" | "trust"> {
 	status: UnitStatus;
 	used: Budget;
 	reserved: Budget;
@@ -102,6 +126,8 @@ export type CompleteResult =
 export interface MeterResult {
 	used: Budget;
 	overBudget: Array<keyof Budget>;
+	/** Escalation approval created by THIS call (first over-budget meter), else null. */
+	escalation: ApprovalRow | null;
 }
 
 export interface ControlStoreOptions {
@@ -113,6 +139,8 @@ export interface ControlStoreOptions {
 	approvalTtlMs?: number;
 	/** Idle threshold before a unit is retired (SPEC FR8, default 90 days). */
 	retireIdleMs?: number;
+	/** Gate judge (ADR-0005). Contracts with `judge: true` are rejected at delegate when absent. */
+	judge?: JudgeFn;
 }
 
 const SCHEMA = `
@@ -140,10 +168,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   contract TEXT NOT NULL,
   grants TEXT,
   budget TEXT NOT NULL,
+  used TEXT NOT NULL DEFAULT '{"tokens":0,"costUsd":0,"wallClockSec":0}',
   deadline TEXT,
   status TEXT NOT NULL,
   parent_task TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
+  generation INTEGER NOT NULL DEFAULT 0,
   reason TEXT,
   artifact_hash TEXT,
   created_at TEXT NOT NULL,
@@ -162,6 +192,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   question TEXT NOT NULL,
   options TEXT NOT NULL,
   owner TEXT NOT NULL,
+  holder_unit_id TEXT,
   status TEXT NOT NULL,
   decision TEXT,
   decided_by TEXT,
@@ -187,6 +218,25 @@ CREATE TABLE IF NOT EXISTS evals (
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS evals_unit ON evals(unit_id);
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  unit_id TEXT NOT NULL,
+  owner TEXT,
+  kind TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  acked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS notifications_unit ON notifications(unit_id, acked_at);
+`;
+
+/** The audit chain is append-only at the DB level (FR7): any UPDATE or DELETE aborts. */
+const AUDIT_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 `;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -197,6 +247,7 @@ export class ControlStore {
 	private readonly genId: (prefix: string) => string;
 	private readonly approvalTtlMs: number;
 	private readonly retireIdleMs: number;
+	private readonly judge: JudgeFn | undefined;
 	/** Filesystem path to control.db (so the dispatcher can wire ORG_CONTROL_DB). */
 	readonly dbPath: string;
 
@@ -206,9 +257,41 @@ export class ControlStore {
 		this.genId = opts.genId ?? ((p) => `${p}_${createHash("sha256").update(`${Math.random()}${this.clock()}`).digest("hex").slice(0, 16)}`);
 		this.approvalTtlMs = opts.approvalTtlMs ?? DAY_MS;
 		this.retireIdleMs = opts.retireIdleMs ?? 90 * DAY_MS;
+		this.judge = opts.judge;
 		this.db = new DatabaseSync(path);
 		this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 		this.db.exec(SCHEMA);
+		this.db.exec(AUDIT_TRIGGERS);
+		this.ensureColumns();
+	}
+
+	/** Defensive migration for DBs created before a column existed (v0.x, no formal migrations). */
+	private ensureColumns(): void {
+		const cols = this.db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+		if (!cols.some((c) => c.name === "used")) {
+			this.db.exec(`ALTER TABLE tasks ADD COLUMN used TEXT NOT NULL DEFAULT '{"tokens":0,"costUsd":0,"wallClockSec":0}'`);
+		}
+		if (!cols.some((c) => c.name === "generation")) {
+			this.db.exec("ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0");
+		}
+		const approvalCols = this.db.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
+		if (!approvalCols.some((c) => c.name === "holder_unit_id")) {
+			this.db.exec("ALTER TABLE approvals ADD COLUMN holder_unit_id TEXT");
+			// Old rows: the holder is the unit on the executing unit's ancestor chain whose owner currently holds the approval.
+			const old = this.db.prepare("SELECT id, task_id, owner FROM approvals").all() as Array<{ id: string; task_id: string; owner: string }>;
+			for (const r of old) {
+				const task = this.getTask(r.task_id);
+				const holder = task ? this.unitByOwnerNear(task.toUnit, r.owner) : null;
+				if (holder) this.db.prepare("UPDATE approvals SET holder_unit_id=? WHERE id=?").run(holder.id, r.id);
+			}
+		}
+		const noteCols = this.db.prepare("PRAGMA table_info(notifications)").all() as Array<{ name: string }>;
+		if (!noteCols.some((c) => c.name === "owner")) {
+			this.db.exec("ALTER TABLE notifications ADD COLUMN owner TEXT");
+			// Old rows: the addressed unit's current owner.
+			this.db.exec("UPDATE notifications SET owner = (SELECT owner FROM units WHERE units.id = notifications.unit_id)");
+		}
+		this.db.exec("CREATE INDEX IF NOT EXISTS notifications_owner ON notifications(owner, acked_at)");
 	}
 
 	close(): void {
@@ -244,6 +327,44 @@ export class ControlStore {
 				this.nowIso(),
 			);
 		this.append("unit", m.owner, "unit.add", m.id, { path: m.path, parent: m.parent });
+	}
+
+	/**
+	 * Apply an authored manifest to an EXISTING unit: owner, parent, grants, budget, limits,
+	 * expiresAt, minEval. Status, usage and path are never touched (a path change would move the
+	 * unit's workspace, so it is refused). A parent that is unknown or would create a cycle is
+	 * refused. Audited as `unit.update` with the before/after of each changed field.
+	 * Returns the changed field names (empty = no write, no audit entry).
+	 */
+	updateUnit(m: Manifest, actor = "admin"): string[] {
+		const cur = this.getUnit(m.id);
+		if (!cur) throw new Error(`unknown unit ${m.id}`);
+		if (cur.path !== m.path) throw new Error(`unit ${m.id}: path change ${cur.path} -> ${m.path} is not supported`);
+		if (m.parent !== cur.parent && m.parent !== null) {
+			if (!this.getUnit(m.parent)) throw new Error(`unit ${m.id}: unknown parent ${m.parent}`);
+			const seen = new Set<string>([m.id]);
+			for (let p: string | null = m.parent; p !== null; p = this.getUnit(p)?.parent ?? null) {
+				if (seen.has(p)) throw new Error(`unit ${m.id}: parent ${m.parent} would create a cycle`);
+				seen.add(p);
+			}
+		}
+		const fmt = (gs: readonly Grant[]): string[] => gs.map(formatGrant).sort();
+		const diffs: Array<[string, unknown, unknown]> = [
+			["owner", cur.owner, m.owner],
+			["parent", cur.parent, m.parent],
+			["grants", fmt(cur.grants), fmt(m.grants)],
+			["budget", cur.budget, m.budget],
+			["limits", cur.limits, m.limits],
+			["expiresAt", cur.expiresAt, m.expiresAt],
+			["minEval", cur.minEval, m.minEval],
+		];
+		const changed = diffs.filter(([, a, b]) => canonicalJson(a) !== canonicalJson(b));
+		if (changed.length === 0) return [];
+		this.db
+			.prepare("UPDATE units SET owner = ?, parent = ?, grants = ?, budget = ?, limits = ?, expires_at = ?, min_eval = ? WHERE id = ?")
+			.run(m.owner, m.parent, JSON.stringify(m.grants.map(formatGrant)), JSON.stringify(m.budget), JSON.stringify(m.limits), m.expiresAt, m.minEval, m.id);
+		this.append("unit", actor, "unit.update", m.id, { changed: Object.fromEntries(changed.map(([k, from, to]) => [k, { from, to }])) });
+		return changed.map(([k]) => k);
 	}
 
 	getUnit(id: string): UnitRow | null {
@@ -302,9 +423,11 @@ export class ControlStore {
 	}
 
 	/** Count open child tasks created under a parent task (fan-out window). */
-	private openChildren(parentTask: string | null): number {
+	private openChildren(parentTask: string | null, fromUnit?: string): number {
 		if (parentTask === null) {
-			const r = this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE parent_task IS NULL AND status IN ('pending','running','escalated')").get() as { n: number };
+			// Root-initiated work: the fan-out window is this caller's own open root tasks,
+			// not every root task in the org (FR3 fanout is per-unit).
+			const r = this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE parent_task IS NULL AND from_unit = ? AND status IN ('pending','running','escalated')").get(fromUnit ?? "") as { n: number };
 			return r.n;
 		}
 		const r = this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE parent_task = ? AND status IN ('pending','running','escalated')").get(parentTask) as { n: number };
@@ -317,6 +440,11 @@ export class ControlStore {
 		const parentTask = input.parentTask ?? null;
 		const from = this.getUnit(input.fromUnit);
 		if (!from) return { ok: false, code: "unknown_from", reason: `unknown unit ${input.fromUnit}` };
+		if (input.contract.judge && !this.judge) {
+			const reason = "contract requires a judge but this control plane has none configured";
+			this.append("task", input.fromUnit, "delegate.reject", input.toUnit, { code: "judge_unavailable", reason });
+			return { ok: false, code: "judge_unavailable", reason };
+		}
 
 		const snapshot: OrgSnapshot = {
 			units: this.unitsSnapshot(),
@@ -324,7 +452,7 @@ export class ControlStore {
 			callerUsed: from.used,
 			callerReserved: from.reserved,
 			taskChainUnits: this.taskChainUnits(input.fromUnit, parentTask),
-			openChildren: this.openChildren(parentTask),
+			openChildren: this.openChildren(parentTask, input.fromUnit),
 		};
 
 		const check = checkDelegation(
@@ -379,13 +507,19 @@ export class ControlStore {
 	// ---- completion (FR4) ----------------------------------------------------
 
 	async completeTask(id: string, artifact: unknown, judge?: JudgeFn): Promise<CompleteResult> {
-		const t = this.getTask(id);
-		if (!t) return { ok: false, status: "error", reason: `unknown task ${id}` };
-		if (t.status === "done") return { ok: false, status: "error", reason: `task ${id} already done` };
-		if (t.status === "escalated") return { ok: false, status: "error", reason: `task ${id} is escalated` };
+		const first = this.getTask(id);
+		if (!first) return { ok: false, status: "error", reason: `unknown task ${id}` };
+		if (first.status === "done" || first.status === "escalated" || first.status === "cancelled")
+			return { ok: false, status: "error", reason: `task ${id} is ${first.status}` };
 
 		const artifactHash = this.storeArtifact(artifact);
-		const gate = await runGates(t.contract, artifact, judge);
+		this.touchUnit(first.toUnit);
+		const gate = await runGates(first.contract, artifact, judge ?? this.judge);
+		// The gates may await a judge: the task can have been cancelled/completed/escalated meanwhile.
+		const t = this.getTask(id);
+		if (!t) return { ok: false, status: "error", reason: `unknown task ${id}` };
+		if (t.status === "done" || t.status === "escalated" || t.status === "cancelled")
+			return { ok: false, status: "error", reason: `task ${id} is ${t.status}` };
 		const attempts = t.attempts + 1;
 
 		if (gate.pass) {
@@ -400,35 +534,52 @@ export class ControlStore {
 				throw e;
 			}
 			this.append("task", t.toUnit, "complete", id, { artifactHash, stages: gate.stages });
+			this.notify(t.fromUnit, "task.done", id, { artifactHash, toUnit: t.toUnit });
 			return { ok: true, status: "done", gate, artifactHash };
 		}
 
 		const reason = `${gate.stage}: ${gate.reasons.join("; ")}`;
 		const limit = this.getUnit(t.fromUnit)?.limits.maxAttempts ?? 2;
-		if (attempts >= limit) {
-			this.db.prepare("UPDATE tasks SET status='escalated', attempts=?, reason=?, artifact_hash=?, updated_at=? WHERE id=?")
+		this.db.exec("BEGIN");
+		try {
+			this.db.prepare("UPDATE tasks SET attempts=?, reason=?, artifact_hash=?, updated_at=? WHERE id=?")
 				.run(attempts, reason, artifactHash, this.nowIso(), id);
-			this.append("task", t.toUnit, "complete.escalate", id, { reason, attempts });
-			return { ok: false, status: "escalated", gate, attempts, artifactHash };
+			if (attempts >= limit) {
+				// Out of attempts: a real approval row (inbox + expiry climb), not a bare status flag (FR4/FR5).
+				this.append("task", t.toUnit, "complete.escalate", id, { reason, attempts });
+				this.escalate(id, `attempts exhausted (${attempts}/${limit}): ${reason}`, ["retry", "cancel"]);
+				this.db.exec("COMMIT");
+				return { ok: false, status: "escalated", gate, attempts, artifactHash };
+			}
+			// Below the limit: reject, then re-queue so the dispatcher re-runs it (FR4).
+			this.setTaskStatus(id, "rejected");
+			this.append("task", t.toUnit, "complete.reject", id, { reason, attempts });
+			this.notify(t.fromUnit, "task.rejected", id, { reason, attempts });
+			this.retryTask(id);
+			this.db.exec("COMMIT");
+			return { ok: false, status: "rejected", gate, attempts, artifactHash };
+		} catch (e) {
+			this.db.exec("ROLLBACK");
+			throw e;
 		}
-		this.db.prepare("UPDATE tasks SET status='rejected', attempts=?, reason=?, artifact_hash=?, updated_at=? WHERE id=?")
-			.run(attempts, reason, artifactHash, this.nowIso(), id);
-		this.append("task", t.toUnit, "complete.reject", id, { reason, attempts });
-		return { ok: false, status: "rejected", gate, attempts, artifactHash };
 	}
 
 	/** Re-open a rejected task for another attempt (dispatcher retry path). */
 	retryTask(id: string): void {
 		const t = this.requireTask(id);
 		if (t.status !== "rejected") throw new Error(`task ${id} is ${t.status}, not rejected`);
-		this.setTaskStatus(id, "pending");
+		this.db.prepare("UPDATE tasks SET status='pending', generation=generation+1, updated_at=? WHERE id=?").run(this.nowIso(), id);
+		this.append("task", t.toUnit, "task.retry", id, { generation: t.generation + 1, attempts: t.attempts });
 	}
 
 	// ---- escalation / approvals (FR5) ----------------------------------------
 
 	escalate(taskId: string, question: string, options: string[]): ApprovalRow {
 		const t = this.requireTask(taskId);
-		const owner = this.getUnit(t.toUnit)?.owner ?? this.getUnit(t.fromUnit)?.owner ?? "unknown";
+		if (t.status === "done" || t.status === "cancelled" || t.status === "escalated")
+			throw new Error(`task ${taskId} is ${t.status}, cannot escalate`);
+		const holder = this.getUnit(t.toUnit) ?? this.getUnit(t.fromUnit);
+		const owner = holder?.owner ?? "unknown";
 		const id = this.genId("appr");
 		const now = this.clock();
 		const row: ApprovalRow = {
@@ -442,13 +593,15 @@ export class ControlStore {
 			decidedBy: null,
 			expiresAt: new Date(now + this.approvalTtlMs).toISOString(),
 			createdAt: new Date(now).toISOString(),
+			holderUnitId: holder?.id ?? null,
 		};
 		this.db.prepare(
-			`INSERT INTO approvals (id, task_id, question, options, owner, status, decision, decided_by, expires_at, created_at)
-			 VALUES (?, ?, ?, ?, ?, 'open', NULL, NULL, ?, ?)`,
-		).run(id, taskId, question, JSON.stringify(options), owner, row.expiresAt, row.createdAt);
-		if (t.status !== "escalated") this.setTaskStatus(taskId, "escalated");
+			`INSERT INTO approvals (id, task_id, question, options, owner, holder_unit_id, status, decision, decided_by, expires_at, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, ?, ?)`,
+		).run(id, taskId, question, JSON.stringify(options), owner, row.holderUnitId, row.expiresAt, row.createdAt);
+		this.setTaskStatus(taskId, "escalated");
 		this.append("approval", t.toUnit, "escalate", id, { taskId, owner, question });
+		this.notify(t.fromUnit, "task.escalated", taskId, { approval: id, question, reason: t.reason });
 		return row;
 	}
 
@@ -470,24 +623,76 @@ export class ControlStore {
 		const a = this.getApproval(id);
 		if (!a) throw new Error(`unknown approval ${id}`);
 		if (a.status !== "open") throw new Error(`approval ${id} is ${a.status}`);
-		this.db.prepare("UPDATE approvals SET status=?, decision=?, decided_by=? WHERE id=?")
-			.run(decision, choice ?? decision, decidedBy, id);
-		this.append("approval", decidedBy, `approval.${decision}`, id, { taskId: a.taskId, choice: choice ?? decision });
+		// A past-TTL approval is no longer actionable (G8): the sweep re-routes or denies it.
+		if (!(Date.parse(a.expiresAt) > this.clock())) throw new Error(`approval ${id} expired`);
+		if (choice !== undefined && !a.options.includes(choice)) throw new Error(`choice ${choice} is not one of: ${a.options.join(", ")}`);
 		const t = this.getTask(a.taskId);
-		if (t && t.status === "escalated") {
-			if (decision === "approved") this.releaseTaskForRetry(t, decidedBy, id);
-			else this.cancelTask(t, `denied by ${decidedBy}`, decidedBy, id);
+		const drives = t !== null && t.status === "escalated";
+		// Choice 'cancel' on an approved escalation cancels the task like a denial;
+		// choice 'extend' raises the task budget (planned before any write: fail closed).
+		const cancels = decision === "denied" || choice === "cancel";
+		const extension = drives && t && decision === "approved" && choice === "extend" ? this.planExtension(t) : null;
+		// Approval decision and the task transition it drives must commit together.
+		this.db.exec("BEGIN");
+		try {
+			this.db.prepare("UPDATE approvals SET status=?, decision=?, decided_by=? WHERE id=?")
+				.run(decision, choice ?? decision, decidedBy, id);
+			if (drives && t) {
+				if (!cancels) {
+					if (extension) {
+						this.db.prepare("UPDATE tasks SET budget=?, updated_at=? WHERE id=?").run(JSON.stringify(extension.budget), this.nowIso(), t.id);
+						this.setBudget(t.fromUnit, extension.parentUsed, extension.parentReserved);
+					}
+					this.db.prepare("UPDATE tasks SET status='pending', generation=generation+1, updated_at=? WHERE id=?").run(this.nowIso(), t.id);
+				} else {
+					this.db.prepare("UPDATE tasks SET status='cancelled', reason=?, updated_at=? WHERE id=?")
+						.run(`${decision === "denied" ? "denied" : "cancelled"} by ${decidedBy}`, this.nowIso(), t.id);
+					this.releaseToParent(t);
+				}
+			}
+			this.db.exec("COMMIT");
+		} catch (e) {
+			this.db.exec("ROLLBACK");
+			throw e;
+		}
+		this.append("approval", decidedBy, `approval.${decision}`, id, { taskId: a.taskId, choice: choice ?? decision });
+		if (drives && t) {
+			if (!cancels) this.append("task", decidedBy, "task.approved", t.id, { approval: id, generation: t.generation + 1, ...(extension ? { extendedBudget: extension.budget } : {}) });
+			else {
+				const why = `${decision === "denied" ? "denied" : "cancelled"} by ${decidedBy}`;
+				this.append("task", decidedBy, "task.denied", t.id, { approval: id, reason: why });
+				this.notify(t.fromUnit, "task.rejected", t.id, { reason: why, approval: id, cancelled: true });
+			}
 		}
 		return this.getApproval(id) as ApprovalRow;
 	}
 
-	/** Approving an escalated task re-opens it as pending for another dispatch (FR5). */
-	private releaseTaskForRetry(t: TaskRow, decidedBy: string, approvalId: string): void {
-		this.setTaskStatus(t.id, "pending");
-		this.append("task", decidedBy, "task.approved", t.id, { approval: approvalId });
+	/**
+	 * Plan an 'extend' (FR6): double the task budget on each dimension it has exhausted
+	 * (base = max(used, budget), so zero limits still grow) and reserve the delta against
+	 * the delegating unit. Throws, writing nothing, if there is nothing to extend, the
+	 * executing unit's own ceiling is exhausted, or the delta exceeds the parent's remaining budget.
+	 */
+	private planExtension(t: TaskRow): { budget: Budget; parentUsed: Budget; parentReserved: Budget } {
+		const dims = exhausted(t.used, t.budget);
+		if (dims.length === 0) throw new Error(`cannot extend task ${t.id}: no exhausted budget dimension`);
+		const unit = this.getUnit(t.toUnit);
+		if (unit && exhausted(unit.used, unit.budget).length > 0)
+			throw new Error(`cannot extend task ${t.id}: unit ${t.toUnit} ceiling is exhausted`);
+		const parent = this.getUnit(t.fromUnit);
+		if (!parent) throw new Error(`cannot extend task ${t.id}: delegating unit ${t.fromUnit} not found`);
+		const budget: Budget = { ...t.budget };
+		const delta: Budget = { tokens: 0, costUsd: 0, wallClockSec: 0 };
+		for (const k of dims) {
+			budget[k] = Math.max(t.used[k], t.budget[k]) * 2;
+			delta[k] = budget[k] - t.budget[k];
+		}
+		if (!fits(delta, remaining(parent.budget, parent.used, parent.reserved)))
+			throw new Error(`cannot extend task ${t.id}: extension exceeds remaining budget of ${t.fromUnit}`);
+		return { budget, parentUsed: parent.used, parentReserved: add(parent.reserved, delta) };
 	}
 
-	/** Denying (or a root-expired approval) cancels the task and returns its reservation. */
+	/** Cancel a task and return its reservation to the parent (root-expiry / timeout path). */
 	private cancelTask(t: TaskRow, reason: string, decidedBy: string, approvalId: string): void {
 		this.db.exec("BEGIN");
 		try {
@@ -500,6 +705,7 @@ export class ControlStore {
 			throw e;
 		}
 		this.append("task", decidedBy, "task.denied", t.id, { approval: approvalId, reason });
+		this.notify(t.fromUnit, "task.rejected", t.id, { reason, approval: approvalId, cancelled: true });
 	}
 
 	/**
@@ -508,21 +714,24 @@ export class ControlStore {
 	 * Returns the number of approvals transitioned.
 	 */
 	expireApprovals(): number {
-		const now = this.nowIso();
-		const due = this.db.prepare("SELECT * FROM approvals WHERE status='open' AND expires_at <= ?").all(now) as Array<Record<string, unknown>>;
+		const now = this.clock();
+		const open = this.db.prepare("SELECT * FROM approvals WHERE status='open'").all() as Array<Record<string, unknown>>;
 		let n = 0;
-		for (const r of due) {
+		for (const r of open) {
 			const a = rowToApproval(r);
+			// Instant compare; an unparseable expiry counts as due (fail closed).
+			if (Date.parse(a.expiresAt) > now) continue;
 			const task = this.getTask(a.taskId);
-			// Climb from the unit that currently holds the approval, not the executing unit,
-			// so each expiry moves exactly one level up the tree (SPEC FR5).
-			const holder = task ? this.unitByOwnerNear(task.toUnit, a.owner) : null;
+			// Climb from the unit that currently holds the approval (by unit id, not owner
+			// string: owners repeat up the tree), so each expiry moves exactly one level up.
+			const holderId = a.holderUnitId ?? (task ? this.unitByOwnerNear(task.toUnit, a.owner)?.id ?? null : null);
+			const holder = holderId ? this.getUnit(holderId) : null;
 			const parent = holder?.parent ? this.getUnit(holder.parent) : null;
 			if (parent) {
 				// re-route up one level with a fresh TTL
-				const reset = new Date(this.clock() + this.approvalTtlMs).toISOString();
-				this.db.prepare("UPDATE approvals SET owner=?, expires_at=? WHERE id=?").run(parent.owner, reset, a.id);
-				this.append("approval", "control", "approval.reroute", a.id, { from: a.owner, to: parent.owner });
+				const reset = new Date(now + this.approvalTtlMs).toISOString();
+				this.db.prepare("UPDATE approvals SET owner=?, holder_unit_id=?, expires_at=? WHERE id=?").run(parent.owner, parent.id, reset, a.id);
+				this.append("approval", "control", "approval.reroute", a.id, { from: a.owner, to: parent.owner, holder: parent.id });
 			} else {
 				this.db.prepare("UPDATE approvals SET status='expired', decision='denied' WHERE id=?").run(a.id);
 				this.append("approval", "control", "approval.expire", a.id, { taskId: a.taskId });
@@ -555,7 +764,7 @@ export class ControlStore {
 	/** The unit's latest eval pass rate (0..1), or null when it has no eval runs. */
 	latestEvalRate(unitId: string): number | null {
 		const r = this.db
-			.prepare("SELECT passed, total FROM evals WHERE unit_id=? ORDER BY at DESC, id DESC LIMIT 1")
+			.prepare("SELECT passed, total FROM evals WHERE unit_id=? ORDER BY at DESC, rowid DESC LIMIT 1")
 			.get(unitId) as { passed: number; total: number } | undefined;
 		if (!r || r.total <= 0) return null;
 		return r.passed / r.total;
@@ -571,18 +780,21 @@ export class ControlStore {
 	 */
 	sweepLifecycle(): LifecycleTransition[] {
 		const now = this.clock();
-		const nowIso = new Date(now).toISOString();
 		const out: LifecycleTransition[] = [];
 		for (const unit of this.listUnits()) {
 			if (unit.status !== "active") continue;
 			let to: UnitStatus | null = null;
 			let reason: LifecycleTransition["reason"] | null = null;
-			if (unit.expiresAt !== null && unit.expiresAt <= nowIso) {
+			// Compare instants, not strings (offsets / fractional digits differ); an unparseable expiry fails closed.
+			const expiresMs = unit.expiresAt === null ? null : Date.parse(unit.expiresAt);
+			if (expiresMs !== null && !(expiresMs > now)) {
 				to = "suspended";
 				reason = "expired";
 			} else {
 				const since = unit.lastActive ?? unit.createdAt;
-				if (since !== null && now - Date.parse(since) > this.retireIdleMs) {
+				// A unit with in-flight work is never retired, however long since its last touch.
+				const busy = this.db.prepare("SELECT 1 FROM tasks WHERE to_unit = ? AND status IN ('pending','running','escalated') LIMIT 1").get(unit.id) !== undefined;
+				if (since !== null && now - Date.parse(since) > this.retireIdleMs && !busy) {
 					to = "retired";
 					reason = "idle";
 				} else if (unit.minEval !== null) {
@@ -596,6 +808,8 @@ export class ControlStore {
 			if (to !== null && reason !== null) {
 				this.setUnitStatus(unit.id, to);
 				this.append("unit", "control", "unit.lifecycle", unit.id, { from: unit.status, to, reason });
+				const data = { from: unit.status, to, reason, owner: unit.owner };
+				this.notify(unit.id, "unit.lifecycle", unit.id, data);
 				out.push({ unitId: unit.id, from: unit.status, to, reason });
 			}
 		}
@@ -604,17 +818,69 @@ export class ControlStore {
 
 	// ---- budget (FR6) --------------------------------------------------------
 
-	/** Meter real usage against the executing unit and its task. Returns over-budget dims. */
+	/**
+	 * Meter real usage against the executing unit, its task and every ancestor (FR6).
+	 * The usage is added to the executing unit's ceiling and to the `used` of the task and
+	 * every still-open ancestor task, so completion rolls it up each level exactly once.
+	 * An ancestor unit's ceiling is breached when its used + reserved, plus whatever the
+	 * in-flight task below it has consumed beyond its reservation, exceeds its budget.
+	 */
 	meter(taskId: string, usage: Budget): MeterResult {
 		const t = this.requireTask(taskId);
+		if (t.status === "done" || t.status === "cancelled") throw new Error(`task ${taskId} is ${t.status}, cannot meter`);
 		const unit = this.getUnit(t.toUnit);
 		if (!unit) throw new Error(`unknown unit ${t.toUnit}`);
-		const used = add(unit.used, usage);
-		this.setBudget(t.toUnit, used, unit.reserved);
-		// Over the task's reserved budget, or over the unit's own ceiling.
-		const over = new Set<keyof Budget>([...exhausted(used, unit.budget)]);
-		this.append("budget", t.toUnit, "meter", taskId, { usage });
-		return { used, overBudget: [...over] };
+		const unitUsed = add(unit.used, usage);
+		const taskUsed = add(t.used, usage);
+		// Over the task's reserved budget, or over the unit's own ceiling (FR6).
+		const over = new Set<keyof Budget>([...exhausted(taskUsed, t.budget), ...exhausted(unitUsed, unit.budget)]);
+		// Ancestors: walk the delegation chain, charging each open ancestor task and checking its delegator's ceiling.
+		const ancestors: Array<{ task: TaskRow; used: Budget }> = [];
+		let cur: TaskRow | null = t;
+		const seen = new Set<string>([t.id]);
+		while (cur) {
+			const delegator = this.getUnit(cur.fromUnit);
+			const inFlight = cur.id === t.id ? taskUsed : add(cur.used, usage);
+			if (delegator) {
+				const overrun = clampZero(sub(inFlight, cur.budget));
+				const projected = add(add(delegator.used, delegator.reserved), overrun);
+				for (const k of ["tokens", "costUsd", "wallClockSec"] as const) if (projected[k] > delegator.budget[k]) over.add(k);
+			}
+			if (cur.parentTask === null || seen.has(cur.parentTask)) break;
+			seen.add(cur.parentTask);
+			const parent = this.getTask(cur.parentTask);
+			if (!parent) break;
+			// A settled ancestor already rolled its usage up; charging it again would double count.
+			if (parent.status !== "done" && parent.status !== "cancelled") ancestors.push({ task: parent, used: add(parent.used, usage) });
+			cur = parent;
+		}
+		const overBudget = [...over];
+		// Usage update, audit row and escalation commit or roll back together.
+		this.db.exec("BEGIN");
+		try {
+			this.setBudget(t.toUnit, unitUsed, unit.reserved);
+			this.db.prepare("UPDATE tasks SET used=?, updated_at=? WHERE id=?").run(JSON.stringify(taskUsed), this.nowIso(), taskId);
+			for (const a of ancestors) {
+				this.db.prepare("UPDATE tasks SET used=?, updated_at=? WHERE id=?").run(JSON.stringify(a.used), this.nowIso(), a.task.id);
+			}
+			this.touchUnit(t.toUnit);
+			this.append("budget", t.toUnit, "meter", taskId, { usage });
+			let escalation: ApprovalRow | null = null;
+			if (overBudget.length > 0 && t.status !== "escalated" && !this.hasOpenApproval(taskId)) {
+				// 'extend' only helps when the task's OWN limit is exhausted; an ancestor-ceiling breach can only be cancelled.
+				const options = exhausted(taskUsed, t.budget).length > 0 ? ["extend", "cancel"] : ["cancel"];
+				escalation = this.escalate(taskId, `budget exhausted on ${overBudget.join(",")}`, options);
+			}
+			this.db.exec("COMMIT");
+			return { used: unitUsed, overBudget, escalation };
+		} catch (e) {
+			this.db.exec("ROLLBACK");
+			throw e;
+		}
+	}
+
+	private hasOpenApproval(taskId: string): boolean {
+		return this.db.prepare("SELECT 1 FROM approvals WHERE task_id = ? AND status = 'open' LIMIT 1").get(taskId) !== undefined;
 	}
 
 	/** Remaining budget available to a unit for new work. */
@@ -627,10 +893,13 @@ export class ControlStore {
 	private releaseToParent(t: TaskRow): void {
 		const parent = this.getUnit(t.fromUnit);
 		if (!parent) return;
-		// Release the reservation; roll the child's actual usage up into the parent (FR6).
-		const child = this.getUnit(t.toUnit);
-		const childUsed = child ? child.used : ZERO;
-		const taskUsed = fits(childUsed, t.budget) ? childUsed : t.budget;
+		// Roll THIS task's metered usage into the parent, and release the whole reservation.
+		// Per-task usage (not the child unit's lifetime total) so multiple tasks to the same
+		// child never multiply-count (FR6).
+		const task = this.getTask(t.id) ?? t;
+		// Roll the task's FULL metered usage into the parent (an overrun stays charged, so the
+		// tree ceiling is conserved) and release only the reservation (FR6).
+		const taskUsed = task.used;
 		const reserved = clampZero(sub(parent.reserved, t.budget));
 		this.setBudget(t.fromUnit, add(parent.used, taskUsed), reserved);
 	}
@@ -654,6 +923,16 @@ export class ControlStore {
 	}
 
 	// ---- audit (FR7) ---------------------------------------------------------
+
+	/** Append a PDP decision for `unitId` to the audit chain. */
+	recordDecision(unitId: string, taskId: string | null, req: ToolRequest, decision: Decision): ChainedEntry {
+		this.touchUnit(unitId);
+		return this.append("policy", unitId, decision.allow ? "tool.allow" : "tool.deny", req.toolName, {
+			paths: req.paths,
+			reason: decision.allow ? null : decision.reason,
+			taskId,
+		});
+	}
 
 	append(kind: string, actor: string, action: string, subject: string, data: unknown): ChainedEntry {
 		const prev = this.lastAudit();
@@ -700,6 +979,58 @@ export class ControlStore {
 			cur = u.parent;
 		}
 		return this.getUnit(execUnitId);
+	}
+
+	// ---- notifications (FR4/FR8) ---------------------------------------------
+
+	/**
+	 * Queue an audited notification for a unit (parent on child done/escalated/rejected, unit on lifecycle change).
+	 * The row also carries the addressed unit's OWNER, so a human owner can read it from the owner inbox
+	 * even when the unit has no live session (retired/suspended unit, parent without a worker) (FR8).
+	 */
+	notify(unitId: string, kind: NotificationKind, subject: string, data: JsonValue): NotificationRow {
+		const owner = this.getUnit(unitId)?.owner ?? null;
+		const row: NotificationRow = { id: this.genId("note"), unitId, owner, kind, subject, data, createdAt: this.nowIso(), ackedAt: null };
+		this.db
+			.prepare("INSERT INTO notifications (id, unit_id, owner, kind, subject, data, created_at, acked_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)")
+			.run(row.id, unitId, owner, kind, subject, canonicalJson(data), row.createdAt);
+		this.append("notify", unitId, `notify.${kind}`, subject, { id: row.id });
+		return row;
+	}
+
+	/** Unacknowledged notifications for a unit, oldest first. */
+	listNotifications(unitId: string): NotificationRow[] {
+		const rows = this.db
+			.prepare("SELECT * FROM notifications WHERE unit_id = ? AND acked_at IS NULL ORDER BY created_at ASC, rowid ASC")
+			.all(unitId) as Array<Record<string, unknown>>;
+		return rows.map(rowToNotification);
+	}
+
+	/** Unacknowledged notifications addressed to an owner's units (owner inbox), oldest first. Omit `owner` for all (admin). */
+	listOwnerNotifications(owner?: string): NotificationRow[] {
+		const rows = (owner === undefined
+			? this.db.prepare("SELECT * FROM notifications WHERE acked_at IS NULL ORDER BY created_at ASC, rowid ASC").all()
+			: this.db.prepare("SELECT * FROM notifications WHERE owner = ? AND acked_at IS NULL ORDER BY created_at ASC, rowid ASC").all(owner)) as Array<Record<string, unknown>>;
+		return rows.map(rowToNotification);
+	}
+
+	/** Acknowledge one of the unit's own notifications. Returns false when it is unknown, foreign or already acked. */
+	ackNotification(unitId: string, id: string): boolean {
+		const info = this.db.prepare("UPDATE notifications SET acked_at = ? WHERE id = ? AND unit_id = ? AND acked_at IS NULL").run(this.nowIso(), id, unitId);
+		if (info.changes === 0) return false;
+		this.append("notify", unitId, "notify.ack", id, {});
+		return true;
+	}
+
+	/** Acknowledge a notification from the owner inbox. `owner` undefined = admin (any). False when unknown, foreign or already acked. */
+	ackOwnerNotification(owner: string | undefined, id: string): boolean {
+		const info =
+			owner === undefined
+				? this.db.prepare("UPDATE notifications SET acked_at = ? WHERE id = ? AND acked_at IS NULL").run(this.nowIso(), id)
+				: this.db.prepare("UPDATE notifications SET acked_at = ? WHERE id = ? AND owner = ? AND acked_at IS NULL").run(this.nowIso(), id, owner);
+		if (info.changes === 0) return false;
+		this.append("notify", owner ?? "admin", "notify.ack", id, {});
+		return true;
 	}
 
 	private requireTask(id: string): TaskRow {
@@ -761,10 +1092,12 @@ function rowToTask(r: Record<string, unknown>): TaskRow {
 		contract: fromJson<Contract>(r.contract as string, "task.contract"),
 		grants: grantsRaw ? parseGrants(fromJson<string[]>(grantsRaw, "task.grants")) : null,
 		budget: fromJson<Budget>(r.budget as string, "task.budget"),
+		used: r.used != null ? fromJson<Budget>(r.used as string, "task.used") : ZERO,
 		deadline: (r.deadline as string | null) ?? null,
 		status: r.status as TaskStatus,
 		parentTask: (r.parent_task as string | null) ?? null,
 		attempts: r.attempts as number,
+		generation: (r.generation as number | undefined) ?? 0,
 		reason: (r.reason as string | null) ?? null,
 		artifactHash: (r.artifact_hash as string | null) ?? null,
 		createdAt: r.created_at as string,
@@ -784,6 +1117,20 @@ function rowToApproval(r: Record<string, unknown>): ApprovalRow {
 		decidedBy: (r.decided_by as string | null) ?? null,
 		expiresAt: r.expires_at as string,
 		createdAt: r.created_at as string,
+		holderUnitId: (r.holder_unit_id as string | null) ?? null,
+	};
+}
+
+function rowToNotification(r: Record<string, unknown>): NotificationRow {
+	return {
+		id: r.id as string,
+		unitId: r.unit_id as string,
+		owner: (r.owner as string | null) ?? null,
+		kind: r.kind as NotificationKind,
+		subject: r.subject as string,
+		data: fromJson<JsonValue>(r.data as string, "notification.data"),
+		createdAt: r.created_at as string,
+		ackedAt: (r.acked_at as string | null) ?? null,
 	};
 }
 

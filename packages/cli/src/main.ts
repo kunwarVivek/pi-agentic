@@ -7,14 +7,16 @@
  *   ORG_ADMIN_TOKEN_FILE  file holding the operator admin token      (required)
  *   ORG_ADMIN_TOKEN       the admin token directly (overrides the file)
  *
- * Currently hosts the `approvals` command; future operator verbs (units, tasks,
+ * Hosts the `approvals`, `notifications` and `units` commands; future operator verbs (tasks,
  * audit) register here too.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
-import { AdminClient } from "@agentic-pi/control-plane";
+import { AdminClient, ControlStore, syncUnits } from "pi-agentic-control-plane";
 import { runApprovals } from "./approvals.ts";
+import { runNotifications } from "./notifications.ts";
+import { type UnitSyncTarget, runUnits } from "./units.ts";
 
 interface CliConfig {
 	socketPath: string;
@@ -31,6 +33,18 @@ function configFromEnv(env: Record<string, string | undefined>): CliConfig {
 	return { socketPath, token };
 }
 
+/** Live daemon over the admin socket, or (`--db`) control.db opened directly while the daemon is stopped. */
+async function openUnitTarget(db: string | undefined, env: Record<string, string | undefined>): Promise<{ target: UnitSyncTarget; close(): void }> {
+	if (db !== undefined) {
+		// ControlStore creates control.db (and its schema) when absent: bootstrap before the daemon's first start.
+		const store = new ControlStore(db, {});
+		return { target: { syncUnits: (manifests) => Promise.resolve(syncUnits(store, manifests, "offline-admin")) }, close: () => store.close() };
+	}
+	const cfg = configFromEnv(env);
+	const client = new AdminClient({ socketPath: cfg.socketPath, token: cfg.token });
+	return { target: client, close: () => client.close() };
+}
+
 /**
  * Run the CLI with an explicit argv tail (after `org`). Returns the exit code.
  * Pure w.r.t. process: writes through the injected `out` sink and closes the
@@ -42,14 +56,19 @@ export async function runCli(
 	out: (line: string) => void,
 ): Promise<number> {
 	const [command, ...rest] = argv;
-	if (command !== "approvals") {
-		out(command ? `error: unknown command '${command}'` : "usage: org approvals <list|approve|deny> [args]");
+	if (command === "units") {
+		const result = await runUnits(rest, (db) => openUnitTarget(db, env));
+		for (const line of result.lines) out(line);
+		return result.exitCode;
+	}
+	if (command !== "approvals" && command !== "notifications") {
+		out(command ? `error: unknown command '${command}'` : "usage: org <approvals|notifications|units> [args]");
 		return 2;
 	}
 	const cfg = configFromEnv(env);
 	const client = new AdminClient({ socketPath: cfg.socketPath, token: cfg.token });
 	try {
-		const result = await runApprovals(client, rest);
+		const result = command === "approvals" ? await runApprovals(client, rest) : await runNotifications(client, rest);
 		for (const line of result.lines) out(line);
 		return result.exitCode;
 	} finally {

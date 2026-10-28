@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlStore } from "../src/store-control.ts";
-import { parseManifest, type Manifest, type Budget } from "@agentic-pi/core";
+import { parseManifest, type Manifest, type Budget } from "pi-agentic-core";
 
 const BIG: Budget = { tokens: 100000, costUsd: 100, wallClockSec: 100000 };
 
@@ -157,6 +157,65 @@ test("expiry takes priority over idle and eval when several rules match", () => 
 		advance(10 * DAY); // also well past idle threshold
 		const out = store.sweepLifecycle();
 		assert.deepEqual(out, [{ unitId: "x", from: "active", to: "suspended", reason: "expired" }]);
+	} finally {
+		cleanup();
+	}
+});
+
+test("expires_at is compared as an instant, not a string (FR8)", () => {
+	const { store, cleanup } = fixtures();
+	try {
+		// 01:00+02:00 is 23:00Z the previous day: already past at the fake clock's 00:00Z,
+		// yet it sorts after "2026-01-01T00:00:00.000Z" as a string.
+		store.addUnit(man("ceo", "ceo", null, { expiresAt: "2026-01-01T01:00:00+02:00" }));
+		assert.deepEqual(store.sweepLifecycle(), [{ unitId: "ceo", from: "active", to: "suspended", reason: "expired" }]);
+	} finally {
+		cleanup();
+	}
+});
+
+test("a lifecycle transition is addressed to the unit AND to its owner's inbox, even for a human owner (FR8)", () => {
+	const { store, clock, advance, cleanup } = fixtures();
+	try {
+		store.addUnit(man("boss", "boss", null));
+		store.addUnit(man("eng", "eng", "boss", { owner: "boss@co", expiresAt: new Date(clock() + DAY).toISOString() }));
+		advance(DAY + 1);
+		store.sweepLifecycle();
+		const data = { from: "active", to: "suspended", reason: "expired", owner: "boss@co" };
+		const own = store.listNotifications("eng");
+		assert.equal(own.length, 1);
+		assert.deepEqual(own[0]?.data, data);
+		const inbox = store.listOwnerNotifications("boss@co");
+		assert.equal(inbox.length, 1, "owner inbox shows the notice though the unit is suspended and never runs again");
+		assert.equal(inbox[0]?.kind, "unit.lifecycle");
+		assert.equal(inbox[0]?.subject, "eng");
+		assert.deepEqual(store.listOwnerNotifications("someone-else@co"), []);
+		assert.equal(store.ackOwnerNotification("someone-else@co", inbox[0]!.id), false, "foreign owner cannot ack");
+		assert.equal(store.ackOwnerNotification("boss@co", inbox[0]!.id), true);
+		assert.deepEqual(store.listOwnerNotifications("boss@co"), []);
+	} finally {
+		cleanup();
+	}
+});
+
+test("a unit with a running task is never retired for idleness (FR8)", () => {
+	const { store, advance, cleanup } = fixtures({ retireIdleMs: 90 * DAY });
+	try {
+		store.addUnit(man("ceo", "ceo", null, { grants: ["tool:read", "delegate:*"] }));
+		store.addUnit(man("sales", "sales", "ceo"));
+		const d = store.delegate({
+			fromUnit: "ceo",
+			toUnit: "sales",
+			goal: "long job",
+			contract: { schema: { type: "object" } },
+			budget: { tokens: 10, costUsd: 1, wallClockSec: 10 },
+		});
+		assert.ok(d.ok);
+		store.startTask(d.taskId);
+		advance(100 * DAY);
+		const out = store.sweepLifecycle();
+		assert.equal(store.getUnit("sales")?.status, "active");
+		assert.ok(!out.some((t) => t.unitId === "sales"));
 	} finally {
 		cleanup();
 	}

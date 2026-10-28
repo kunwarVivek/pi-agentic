@@ -18,6 +18,10 @@ export interface SchedulerOptions {
 	dispatcher: Dispatcher;
 	/** Interval between automatic sweeps in ms (default 60s). */
 	intervalMs?: number;
+	/** Interval timer implementation (default: global setInterval, unref'd). Tests inject a manual one. */
+	timer?: SchedulerTimer;
+	/** Receives a failed sweep (default: console.error). A failure never escapes the timer. */
+	onError?: (e: unknown) => void;
 }
 
 export interface SweepResult {
@@ -26,17 +30,37 @@ export interface SweepResult {
 	dispatched: string[];
 }
 
+/** Injectable interval timer (tests drive ticks by hand; production uses the global timers). */
+export interface SchedulerTimer {
+	setInterval(fn: () => unknown, ms: number): unknown;
+	clearInterval(handle: unknown): void;
+}
+
+const REAL_TIMER: SchedulerTimer = {
+	setInterval: (fn, ms) => {
+		const h = setInterval(fn, ms);
+		// Do not keep the process alive solely for the scheduler timer.
+		h.unref?.();
+		return h;
+	},
+	clearInterval: (h) => clearInterval(h as NodeJS.Timeout),
+};
+
 export class Scheduler {
 	private readonly store: ControlStore;
 	private readonly dispatcher: Dispatcher;
 	private readonly intervalMs: number;
-	private timer: ReturnType<typeof setInterval> | null = null;
+	private readonly timerImpl: SchedulerTimer;
+	private readonly onError: (e: unknown) => void;
+	private timer: unknown = null;
 	private running = false;
 
 	constructor(opts: SchedulerOptions) {
 		this.store = opts.store;
 		this.dispatcher = opts.dispatcher;
 		this.intervalMs = opts.intervalMs ?? 60_000;
+		this.timerImpl = opts.timer ?? REAL_TIMER;
+		this.onError = opts.onError ?? ((e) => console.error("pi-control: scheduler sweep failed:", e));
 	}
 
 	/** Run every maintenance job once. Lifecycle first so a just-expired unit is
@@ -48,24 +72,31 @@ export class Scheduler {
 		return { lifecycle, approvalsExpired, dispatched };
 	}
 
-	/** Begin the automatic interval loop. Overlapping sweeps are suppressed. */
+	/** Begin the automatic interval loop. Overlapping sweeps are suppressed; a failed sweep is reported, never thrown. */
 	start(): void {
 		if (this.timer) return;
-		this.timer = setInterval(() => {
-			if (this.running) return;
+		this.timer = this.timerImpl.setInterval(() => {
+			if (this.running) return Promise.resolve();
 			this.running = true;
-			void this.sweep().finally(() => {
-				this.running = false;
-			});
+			return this.sweep()
+				.then(() => undefined)
+				.catch((e: unknown) => {
+					try {
+						this.onError(e);
+					} catch {
+						// a failing reporter must not become an unhandled rejection either
+					}
+				})
+				.finally(() => {
+					this.running = false;
+				});
 		}, this.intervalMs);
-		// Do not keep the process alive solely for the scheduler timer.
-		this.timer.unref?.();
 	}
 
 	/** Stop the automatic loop. In-flight sweeps are allowed to finish. */
 	stop(): void {
 		if (this.timer) {
-			clearInterval(this.timer);
+			this.timerImpl.clearInterval(this.timer);
 			this.timer = null;
 		}
 	}

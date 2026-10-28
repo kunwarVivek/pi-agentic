@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runGates, validateSchema, type Contract } from "../src/gates.ts";
+import { checkRules, runGates, validateSchema, type Contract } from "../src/gates.ts";
+import { MAX_REGEX_INPUT_LENGTH, regexProblem } from "../src/regex-safety.ts";
 
 const contract: Contract = {
 	schema: {
@@ -38,4 +39,53 @@ test("judge stage fails closed", async () => {
 	assert.equal((await runGates(j, ok)).pass, false);
 	assert.equal((await runGates(j, ok, async () => { throw new Error("boom"); })).pass, false);
 	assert.equal((await runGates(j, ok, async () => ({ pass: true, reason: "" }))).pass, true);
+});
+
+test("non-finite numbers never satisfy a numeric schema", async () => {
+	assert.equal(validateSchema({ type: "number", minimum: 0, maximum: 1 }, NaN).length, 1);
+	assert.equal(validateSchema({ type: "number" }, Infinity).length, 1);
+	assert.equal(validateSchema({ type: "number" }, -Infinity).length, 1);
+	// NaN would otherwise pass a bare min/max contract (NaN<min and NaN>max are both false).
+	const c: Contract = { schema: { type: "object", properties: { score: { type: "number", minimum: 0, maximum: 1 } } } };
+	const g = await runGates(c, { score: NaN });
+	assert.equal(g.pass === false && g.stage, "schema");
+});
+
+test("runGates is fail-closed when canonicalJson throws on a non-finite artifact", async () => {
+	// A rules stage canonicalises the whole artifact; a non-finite value deep in it throws.
+	const c: Contract = { schema: { type: "object" }, rules: { maxBytes: 1000 } };
+	const g = await runGates(c, { nested: { x: Infinity } });
+	assert.equal(g.pass, false);
+	assert.equal(g.pass === false && g.stage, "rules");
+});
+
+test("malformed schema constraints fail closed", () => {
+	assert.ok(validateSchema({ type: "object", required: "summary" as unknown as string[] }, {})[0]?.includes("required"));
+	assert.ok(validateSchema({ type: "object", required: [1] as unknown as string[] }, {})[0]?.includes("required"));
+	assert.ok(validateSchema({ enum: "a" as unknown as unknown[] }, "a")[0]?.includes("enum"));
+	assert.ok(validateSchema({ type: "object", properties: [] as unknown as Record<string, unknown> }, {})[0]?.includes("properties"));
+	assert.ok(validateSchema({ type: "array", items: 1 as unknown as Record<string, unknown> }, [])[0]?.includes("items"));
+});
+
+test("checkRules: unsafe forbiddenPatterns fail closed with a reason, never throw", () => {
+	for (const bad of ["(", "(a+)+$", ".*.*.*.*x", "\\w+\\w+\\w+$", ".+.+", "(a)\\1"]) {
+		const errs = checkRules({ forbiddenPatterns: [bad] }, { v: "aaaa" });
+		assert.equal(errs.length, 1, bad);
+		assert.ok(errs[0]!.includes(bad), bad);
+	}
+});
+
+test("regexProblem: escaped backslash is not a backreference; non-overlapping neighbours are fine", () => {
+	assert.equal(regexProblem("a\\\\1"), undefined);
+	assert.equal(regexProblem("\\w+-\\w+"), undefined);
+	assert.equal(regexProblem("a+b+"), undefined);
+	assert.equal(regexProblem("[0-9]+[a-z]+"), undefined);
+	assert.ok(regexProblem("a+a+"));
+	assert.ok(regexProblem("\\1(a)"));
+});
+
+test("checkRules: oversized artifact text fails closed when patterns are present", () => {
+	const big = { v: "x".repeat(MAX_REGEX_INPUT_LENGTH) };
+	assert.equal(checkRules({ forbiddenPatterns: ["zzz"] }, big).length, 1);
+	assert.deepEqual(checkRules({}, big), []);
 });

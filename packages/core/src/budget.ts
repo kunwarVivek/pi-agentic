@@ -18,9 +18,17 @@ export function fits(a: Budget, b: Budget): boolean {
 	return KEYS.every((k) => a[k] <= b[k]);
 }
 
-/** Dimensions where `used` has reached or exceeded `limit`. */
+/** Every dimension is a finite, non-negative number (a well-formed budget request). */
+export function isValidBudget(b: Budget): boolean {
+	return KEYS.every((k) => Number.isFinite(b[k]) && b[k] >= 0);
+}
+/**
+ * Dimensions where `used` has reached or exceeded `limit`. A zero limit means the
+ * dimension may not be consumed at all, so it is flagged only once something is used
+ * (used > 0); zero usage is never over budget.
+ */
 export function exhausted(used: Budget, limit: Budget): Array<keyof Budget> {
-	return KEYS.filter((k) => used[k] >= limit[k]);
+	return KEYS.filter((k) => used[k] > 0 && used[k] >= limit[k]);
 }
 
 /** Remaining = limit − used − reservedForChildren, floored at zero. */

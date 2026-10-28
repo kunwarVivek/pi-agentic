@@ -4,8 +4,8 @@
  * the gate passed. Exercises the real SocketControlClient round-trip.
  *   node scripts/smoke-e2e.ts <control.db> <socket>
  */
-import { ControlStore } from "@agentic-pi/control-plane";
-import type { Contract } from "@agentic-pi/core";
+import { ControlStore } from "pi-agentic-control-plane";
+import type { Contract } from "pi-agentic-core";
 
 const [db, _socket] = process.argv.slice(2);
 if (!db) {

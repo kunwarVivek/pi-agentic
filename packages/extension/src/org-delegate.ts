@@ -5,9 +5,9 @@
  * client is not ready they return an error result.
  */
 
-import { parseGrants } from "@agentic-pi/core";
-import type { Budget } from "@agentic-pi/core";
-import type { Contract } from "@agentic-pi/core";
+import { parseGrants } from "pi-agentic-core";
+import type { Budget } from "pi-agentic-core";
+import type { Contract } from "pi-agentic-core";
 import type { OrgRuntime } from "./bootstrap.ts";
 import type { ExtensionAPI, ToolResult } from "./pi-api.ts";
 
@@ -15,7 +15,7 @@ function text(s: string, isError = false): ToolResult {
 	return { content: [{ type: "text", text: s }], isError };
 }
 
-function asBudget(v: unknown): Budget {
+export function asBudget(v: unknown): Budget {
 	const o = (v ?? {}) as Record<string, unknown>;
 	const num = (x: unknown): number => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : 0);
 	return { tokens: num(o.tokens), costUsd: num(o.costUsd), wallClockSec: num(o.wallClockSec) };

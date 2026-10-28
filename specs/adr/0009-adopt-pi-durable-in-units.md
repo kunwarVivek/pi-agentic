@@ -1,0 +1,27 @@
+# ADR-0009: Adopt pi-durable for durable execution inside a unit
+
+Status: Accepted · 2026-10-27 · Supersedes ADR-0004
+
+## Context
+ADR-0004 deferred `@earendil-works/pi-durable` because it is marked "Experimental. API changes without notice" and has no cross-process locking ("one process owns a storage at a time"). The user has decided to adopt it anyway, for durable execution **inside a unit**: a conversation, its model turns and its tool calls survive a worker crash and resume from the last committed step.
+
+Facts verified against the installed 1.4.0 `.d.ts`: `Harness.open(storage, { models, registry, now, env, onReport }, context)`; `Conversation.submit({ type: "input", requestId })` is idempotent per `requestId`; `Harness.resume()` continues pending tasks; `hook(ToolTask, { beforeTool, afterTool })` and `hook(GenerationTask, { beforeRequest, afterResponse })` are the interception points; SQLite storage is `openNodeSqliteStorage(file)` (WAL, `synchronous = NORMAL`: commits survive process crashes, the newest may be lost on power failure).
+
+## Decision
+- **The control plane stays authoritative for tasks.** Lifecycle, grants, budgets, gates, escalation and the audit chain live in `control.db` (ADR-0003, ADR-0004's state machine). pi-durable holds only the in-unit execution state of a task the control plane already marked `running`. If the two disagree, `control.db` wins: a task that is not `running` is never worked on.
+- **One storage per task**: `<ORG_DURABLE_DIR>/<taskId>.db`. `ORG_DURABLE_DIR` is set by the dispatcher in `durable` worker mode, defaulting to `<dir of control.db>/durable/<unit>`; deployments point it at the unit's own writable state dir.
+- **Single owner via a lock file**: `<taskId>.lock`, created with `O_EXCL`, containing the owner's pid and a nonce. A live pid refuses the second owner (fail closed). A dead pid is a crashed owner: the lock is moved aside atomically, verified, and taken over. Task ids are validated as file names (no separators, no `..`).
+- **Idempotent submission**: the goal and contract are submitted with `requestId = taskId`. A restarted worker reopens the storage, calls `resume()` and re-submits; pi-durable returns the existing submission, so the goal is never submitted twice.
+- **Continuation after a re-queue**: `tasks.generation` in `control.db` (0 at creation) is the authoritative resume counter. `ControlStore` increments it in the same transaction that re-queues a settled task (`resolveApproval` approving an escalation, including `extend`; `retryTask`), and audits the new value (`task.approved` / `task.retry`). The worker submits generation `N >= 1` with `requestId = "<taskId>:<N>"` and a continuation input ("re-queued ... call org_complete") onto the same conversation and storage. A crash inside a generation re-finds that generation's submission, so the continuation is submitted exactly once; only a new control-plane transition produces a new key. Generation 0 keeps `requestId = taskId`. Core stays pure; the counter lives in the control-plane store.
+- **Parity with the Pi extension, by reuse**: the pi-durable org extension calls the same `decideToolCall` (core `decide` + the same path resolution + audited `recordDecision`, fail closed), `redactSecrets`/`redactJson`, and `usageToBudget` as `pi-agentic` (exported via `pi-agentic/shared`). `afterResponse` meters each model step through `client.meter`; an overrun or a metering failure trips the run: further tool calls are blocked and the conversation is aborted. `org_delegate` / `org_complete` / `org_escalate` call the `ControlClient`; `org_complete` and `org_escalate` end the run.
+- **Exact pin, isolated surface**: `@earendil-works/pi-durable`, `pi-ai` and `chord` are pinned to exactly `1.4.0` in `pi-agentic-durable`, the only package that imports them. API churn is absorbed in that adapter; core and control-plane never import pi-durable. The dispatcher gains `workerMode: "pi" | "durable"`; `durable` launches the `agentic-pi-durable-worker` bin with the same `ORG_*` environment plus `ORG_DURABLE_DIR`.
+
+## Consequences
+- \+ A crashed worker resumes mid-conversation and mid-tool-round without re-running committed steps or resubmitting the goal.
+- \+ The control plane is unchanged as the source of truth; durable state can be deleted without losing task state (the task is re-driven from its goal).
+- \- pi-durable is experimental: upgrades are deliberate, re-tested bumps of an exact pin.
+- \- No cross-process locking in pi-durable: safety rests on our lock file. A pid reused by an unrelated live process makes a stale lock look live (we refuse; an operator removes it); a lock directory on a network filesystem is unsupported.
+- \- SQLite `synchronous = NORMAL`: the newest commit can be lost on power failure; the worker then repeats that step.
+- \- Tools not declared `replay: "safe"` are not re-run after a crash (the model sees an `interrupted` result). The org tools are unsafe by default for that reason: the worker re-checks `control.db` rather than assuming.
+- \+ An approved budget extension (or a retry) continues the same conversation: one continuation per re-queue, none duplicated by crashes. If the durable storage was deleted, the worker re-submits the goal and then the continuation.
+- \- A conversation that ends without `org_complete` and without a control-plane transition still returns `ended_without_completion`; only a re-queue (generation bump) grants a new submission.

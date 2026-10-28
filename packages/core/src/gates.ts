@@ -5,6 +5,7 @@
  * Any other keyword is rejected (fail closed) so contracts never silently under-validate.
  */
 import { canonicalJson } from "./audit.ts";
+import { MAX_REGEX_INPUT_LENGTH, regexProblem } from "./regex-safety.ts";
 
 export type JsonSchema = { [k: string]: unknown };
 
@@ -47,9 +48,17 @@ function typeOk(expected: string, actual: string): boolean {
 export function validateSchema(schema: JsonSchema, value: unknown, at = "$"): string[] {
 	const errs: string[] = [];
 	for (const k of Object.keys(schema)) if (!SUPPORTED.has(k)) errs.push(`${at}: unsupported schema keyword '${k}'`);
+	// Malformed constraints fail closed: a broken contract must never silently under-validate.
+	if (schema.required !== undefined && !(Array.isArray(schema.required) && schema.required.every((r) => typeof r === "string")))
+		errs.push(`${at}: 'required' must be an array of strings`);
+	if (schema.enum !== undefined && !Array.isArray(schema.enum)) errs.push(`${at}: 'enum' must be an array`);
+	if (schema.properties !== undefined && !isSchema(schema.properties)) errs.push(`${at}: 'properties' must be an object`);
+	if (schema.items !== undefined && !isSchema(schema.items)) errs.push(`${at}: 'items' must be a schema object`);
 	if (errs.length) return errs;
 
 	const t = typeOf(value);
+	// Non-finite numbers (NaN/Infinity) are not valid JSON and must never satisfy a numeric schema.
+	if (typeof value === "number" && !Number.isFinite(value)) return [`${at}: non-finite number`];
 	const type = schema.type;
 	if (type !== undefined) {
 		const types = Array.isArray(type) ? type : [type];
@@ -62,7 +71,12 @@ export function validateSchema(schema: JsonSchema, value: unknown, at = "$"): st
 	if (typeof value === "string") {
 		if (typeof schema.minLength === "number" && value.length < schema.minLength) errs.push(`${at}: shorter than ${schema.minLength}`);
 		if (typeof schema.maxLength === "number" && value.length > schema.maxLength) errs.push(`${at}: longer than ${schema.maxLength}`);
-		if (typeof schema.pattern === "string" && !new RegExp(schema.pattern, "u").test(value)) errs.push(`${at}: does not match pattern`);
+		if (typeof schema.pattern === "string") {
+			const why = regexProblem(schema.pattern);
+			if (why) errs.push(`${at}: schema pattern ${why}`);
+			else if (value.length > MAX_REGEX_INPUT_LENGTH) errs.push(`${at}: too long to match pattern`);
+			else if (!new RegExp(schema.pattern, "u").test(value)) errs.push(`${at}: does not match pattern`);
+		}
 	}
 	if (typeof value === "number") {
 		if (typeof schema.minimum === "number" && value < schema.minimum) errs.push(`${at}: below minimum ${schema.minimum}`);
@@ -110,17 +124,36 @@ export function checkRules(rules: Rules, artifact: unknown): string[] {
 		collectKeys(artifact, keys);
 		for (const k of rules.forbiddenKeys) if (keys.has(k)) errs.push(`forbidden key '${k}'`);
 	}
-	for (const src of rules.forbiddenPatterns ?? []) if (new RegExp(src, "u").test(text)) errs.push(`forbidden pattern /${src}/`);
+	const patterns = rules.forbiddenPatterns ?? [];
+	if (patterns.length && text.length > MAX_REGEX_INPUT_LENGTH) {
+		errs.push(`artifact exceeds ${MAX_REGEX_INPUT_LENGTH} characters; forbidden patterns cannot be checked safely`);
+	} else {
+		for (const src of patterns) {
+			const why = regexProblem(src);
+			if (why) errs.push(`forbidden pattern /${src}/ ${why}`);
+			else if (new RegExp(src, "u").test(text)) errs.push(`forbidden pattern /${src}/`);
+		}
+	}
 	return errs;
 }
 
 export async function runGates(contract: Contract, artifact: unknown, judge?: JudgeFn): Promise<GateResult> {
 	const stages: string[] = [];
-	const s = validateSchema(contract.schema, artifact);
+	let s: string[];
+	try {
+		s = validateSchema(contract.schema, artifact);
+	} catch (e) {
+		return { pass: false, stage: "schema", reasons: [`schema error: ${(e as Error).message}`] };
+	}
 	if (s.length) return { pass: false, stage: "schema", reasons: s };
 	stages.push("schema");
 	if (contract.rules) {
-		const r = checkRules(contract.rules, artifact);
+		let r: string[];
+		try {
+			r = checkRules(contract.rules, artifact);
+		} catch (e) {
+			return { pass: false, stage: "rules", reasons: [`rules error: ${(e as Error).message}`] };
+		}
 		if (r.length) return { pass: false, stage: "rules", reasons: r };
 		stages.push("rules");
 	}

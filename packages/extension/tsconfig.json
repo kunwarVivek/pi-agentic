@@ -5,5 +5,5 @@
     "rootDir": "./src"
   },
   "include": ["src"],
-  "references": [{ "path": "../core" }, { "path": "../control-plane" }]
+  "references": [{ "path": "../core" }, { "path": "../control-plane" }, { "path": "../deploy" }]
 }

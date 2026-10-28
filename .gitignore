@@ -5,6 +5,7 @@ dist/
 *.db-wal
 *.db-shm
 .pi/tasks/
+.tmp/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

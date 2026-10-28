@@ -9,11 +9,12 @@
  *  - SocketControlClient (socket-client.ts): talks to a ControlServer.
  */
 
-import { type Grant, effectiveGrants } from "@agentic-pi/core";
-import type { Budget } from "@agentic-pi/core";
-import { type Decision, type ToolRequest, decide } from "@agentic-pi/core";
+import { type Grant, effectiveGrants } from "pi-agentic-core";
+import type { Budget } from "pi-agentic-core";
+import type { Decision, ToolRequest } from "pi-agentic-core";
 import {
 	type ApprovalRow,
+	type NotificationRow,
 	type CompleteResult,
 	ControlStore,
 	type DelegateResult,
@@ -27,13 +28,15 @@ export interface WorkerSnapshot {
 	unit: UnitRow | null;
 	task: TaskRow | null;
 	remainingBudget: Budget;
+	/** Unacknowledged notifications for the caller unit (task.done/escalated/rejected, unit.lifecycle). */
+	notifications: NotificationRow[];
 }
 
 /** Delegate input without `fromUnit`: the client supplies its own identity. */
 export interface ClientDelegateInput {
 	toUnit: string;
 	goal: string;
-	contract: import("@agentic-pi/core").Contract;
+	contract: import("pi-agentic-core").Contract;
 	grants?: Grant[];
 	budget: Budget;
 	deadline?: string | null;
@@ -49,17 +52,19 @@ export interface ControlClient {
 	unit(): UnitRow | null;
 	/** Unit grants narrowed by the current task's grants (FR2). */
 	effectiveGrants(): Grant[];
-	/** PDP decision for a resolved tool request (local, sync). */
-	decide(req: ToolRequest): Decision;
 	remainingBudget(): Budget;
 	delegate(input: ClientDelegateInput): Promise<DelegateResult>;
 	completeTask(taskId: string, artifact: unknown): Promise<CompleteResult>;
 	escalate(taskId: string, question: string, options: string[]): Promise<ApprovalRow>;
 	meter(taskId: string, usage: Budget): Promise<MeterResult>;
+	/** Append a PDP decision to the tamper-evident audit chain (FR7). Rejects on failure. */
+	recordDecision(req: ToolRequest, decision: Decision): Promise<void>;
 	/** Open approvals this caller may act on (owner-scoped for a unit). */
 	listApprovals(): Promise<ApprovalRow[]>;
 	/** Approve or deny an open approval the caller owns. */
 	resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow>;
+	/** Acknowledge one of this unit's notifications; rejects if unknown or not its own. */
+	ackNotification(id: string): Promise<void>;
 	close(): void | Promise<void>;
 }
 
@@ -74,8 +79,10 @@ export abstract class BaseControlClient implements ControlClient {
 	abstract completeTask(taskId: string, artifact: unknown): Promise<CompleteResult>;
 	abstract escalate(taskId: string, question: string, options: string[]): Promise<ApprovalRow>;
 	abstract meter(taskId: string, usage: Budget): Promise<MeterResult>;
+	abstract recordDecision(req: ToolRequest, decision: Decision): Promise<void>;
 	abstract listApprovals(): Promise<ApprovalRow[]>;
 	abstract resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow>;
+	abstract ackNotification(id: string): Promise<void>;
 	abstract close(): void | Promise<void>;
 
 	currentTask(): TaskRow | null {
@@ -88,9 +95,6 @@ export abstract class BaseControlClient implements ControlClient {
 		const s = this.snapshot();
 		if (!s.unit) return [];
 		return effectiveGrants(s.unit.grants, s.task?.grants ?? undefined);
-	}
-	decide(req: ToolRequest): Decision {
-		return decide(this.effectiveGrants(), req);
 	}
 	remainingBudget(): Budget {
 		return this.snapshot().remainingBudget;
@@ -118,7 +122,7 @@ export class LocalControlClient extends BaseControlClient {
 		const unit = this.store.getUnit(this.unitId);
 		const task = this.taskId ? this.store.getTask(this.taskId) : null;
 		const remainingBudget = unit ? this.store.remainingBudget(this.unitId) : EMPTY_BUDGET;
-		return { unit, task, remainingBudget };
+		return { unit, task, remainingBudget, notifications: unit ? this.store.listNotifications(this.unitId) : [] };
 	}
 
 	refresh(): Promise<WorkerSnapshot> {
@@ -152,6 +156,15 @@ export class LocalControlClient extends BaseControlClient {
 		return Promise.resolve(this.store.meter(taskId, usage));
 	}
 
+	recordDecision(req: ToolRequest, decision: Decision): Promise<void> {
+		try {
+			this.store.recordDecision(this.unitId, this.taskId, req, decision);
+			return Promise.resolve();
+		} catch (e) {
+			return Promise.reject(e);
+		}
+	}
+
 	listApprovals(): Promise<ApprovalRow[]> {
 		const owner = this.store.getUnit(this.unitId)?.owner;
 		return Promise.resolve(owner ? this.store.listOpenApprovals(owner) : []);
@@ -160,6 +173,11 @@ export class LocalControlClient extends BaseControlClient {
 	resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow> {
 		const owner = this.store.getUnit(this.unitId)?.owner ?? this.unitId;
 		return Promise.resolve(this.store.resolveApproval(id, decision, owner, choice));
+	}
+
+	ackNotification(id: string): Promise<void> {
+		if (!this.store.ackNotification(this.unitId, id)) return Promise.reject(new Error(`no unacked notification ${id} for this unit`));
+		return Promise.resolve();
 	}
 
 	close(): void {

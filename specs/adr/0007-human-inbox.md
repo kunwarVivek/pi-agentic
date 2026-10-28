@@ -42,10 +42,10 @@ Two forces constrain the design:
   **any** approval (`decidedBy` = `"admin"`). This avoids inventing a human
   identity system while still preserving single-writer: the CLI is a thin RPC
   client, never a second DB writer.
-- **A new `@agentic-pi/cli` package** (bin `org`) hosts operator commands,
+- **A new `pi-agentic-cli` package** (bin `org`) hosts operator commands,
   starting with `org approvals list|approve|deny`. Future operator verbs (units,
   tasks, audit) live here too — the core stays pure and the CLI is just another
-  leaf consumer of `@agentic-pi/control-plane`.
+  leaf consumer of `pi-agentic-control-plane`.
 
 ## Consequences
 

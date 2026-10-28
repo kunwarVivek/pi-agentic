@@ -1,7 +1,7 @@
 /**
  * Delegation validation (SPEC FR3). Pure: caller supplies org snapshot.
  */
-import { fits, remaining } from "./budget.ts";
+import { fits, isValidBudget, remaining } from "./budget.ts";
 import { type Grant, formatGrant, uncovered, unitMatches } from "./grants.ts";
 import type { Budget, Manifest } from "./manifest.ts";
 
@@ -15,7 +15,7 @@ export interface DelegationRequest {
 }
 
 export interface OrgSnapshot {
-	units: ReadonlyMap<string, Manifest & { status: UnitStatus }>;
+	units: ReadonlyMap<string, Omit<Manifest, "secrets" | "trust"> & { status: UnitStatus }>;
 	/** Effective grants of the caller in the context of parentTaskId. */
 	callerGrants: readonly Grant[];
 	/** Caller's budget usage so far and amount already reserved for open children. */
@@ -50,15 +50,19 @@ export function checkDelegation(req: DelegationRequest, org: OrgSnapshot): Deleg
 	if (from.status !== "active") return { ok: false, code: "from_inactive", reason: `${from.id} is ${from.status}` };
 	if (to.status !== "active") return { ok: false, code: "to_inactive", reason: `${to.id} is ${to.status}` };
 	if (req.fromUnit === req.toUnit) return { ok: false, code: "self", reason: "cannot delegate to self" };
+	if (!isValidBudget(req.budget)) return { ok: false, code: "bad_budget", reason: "budget must be finite and non-negative on every dimension" };
 
-	const delegateGranted = org.callerGrants.some((g) => g.kind === "delegate" && unitMatches(g.target, to.path));
-	if (!delegateGranted) {
-		return { ok: false, code: "not_authorized", reason: `${from.id} has no delegate grant covering ${to.path}` };
-	}
+	// FR3: target is a descendant of the caller (no grant needed) OR on the caller's delegate list.
+	// A bare `delegate:*` covers descendants only; a lateral/upward target needs a non-wildcard grant.
 	const isDesc = isDescendant(org.units, from.id, to.id);
-	if (!isDesc && !org.callerGrants.some((g) => g.kind === "delegate" && g.target !== "*" && unitMatches(g.target, to.path))) {
-		// lateral delegation requires an explicit (non-wildcard) grant
-		return { ok: false, code: "lateral_needs_explicit", reason: `${to.path} is not a descendant; explicit delegate grant required` };
+	if (!isDesc) {
+		const covering = org.callerGrants.filter((g) => g.kind === "delegate" && unitMatches(g.target, to.path));
+		if (covering.length === 0) {
+			return { ok: false, code: "not_authorized", reason: `${to.path} is not a descendant of ${from.id} and has no delegate grant covering it` };
+		}
+		if (!covering.some((g) => g.kind === "delegate" && g.target !== "*")) {
+			return { ok: false, code: "lateral_needs_explicit", reason: `${to.path} is not a descendant; explicit delegate grant required` };
+		}
 	}
 
 	if (req.grants) {
@@ -74,8 +78,11 @@ export function checkDelegation(req: DelegationRequest, org: OrgSnapshot): Deleg
 		return { ok: false, code: "budget_target", reason: "requested budget exceeds target unit's budget ceiling" };
 	}
 
-	const depth = org.taskChainUnits.length; // new task depth = chain length + 1 (root task depth 1)
-	if (depth + 1 > from.limits.maxDepth) return { ok: false, code: "depth", reason: `max depth ${from.limits.maxDepth} reached` };
+	// Depth = number of delegation hops from the root initiator to the new task. The chain holds
+	// one unit per hop (root first, ending with fromUnit), so the new task's depth is the chain
+	// length: a root-initiated delegation is depth 1; with max_depth 4, depth 4 is allowed, 5 is not.
+	const depth = org.taskChainUnits.length;
+	if (depth > from.limits.maxDepth) return { ok: false, code: "depth", reason: `max depth ${from.limits.maxDepth} reached` };
 	if (org.openChildren + 1 > from.limits.maxChildren) {
 		return { ok: false, code: "fanout", reason: `max children ${from.limits.maxChildren} reached` };
 	}

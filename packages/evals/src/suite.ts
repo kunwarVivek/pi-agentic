@@ -6,7 +6,7 @@
  * + rules + an optional `judge: true` flag that a judge stage is expected) but
  * never a `JudgeFn`. Wire the actual judge functions in code after loading.
  */
-import type { Contract, Rules } from "@agentic-pi/core";
+import { type Contract, type Rules, regexProblem } from "pi-agentic-core";
 import type { EvalCase, EvalSuite } from "./runner.ts";
 
 export class EvalSuiteError extends Error {
@@ -35,8 +35,13 @@ function parseRules(v: unknown, path: string, p: string[]): Rules | undefined {
 		else p.push(`${path}.forbiddenKeys must be string[]`);
 	}
 	if (v.forbiddenPatterns !== undefined) {
-		if (Array.isArray(v.forbiddenPatterns) && v.forbiddenPatterns.every(isStr)) rules.forbiddenPatterns = v.forbiddenPatterns;
-		else p.push(`${path}.forbiddenPatterns must be string[]`);
+		if (Array.isArray(v.forbiddenPatterns) && v.forbiddenPatterns.every(isStr)) {
+			rules.forbiddenPatterns = v.forbiddenPatterns;
+			v.forbiddenPatterns.forEach((src, i) => {
+				const why = regexProblem(src);
+				if (why) p.push(`${path}.forbiddenPatterns[${i}] ${why}`);
+			});
+		} else p.push(`${path}.forbiddenPatterns must be string[]`);
 	}
 	if (v.maxBytes !== undefined) {
 		if (Number.isInteger(v.maxBytes) && (v.maxBytes as number) > 0) rules.maxBytes = v.maxBytes as number;

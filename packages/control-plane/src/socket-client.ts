@@ -8,8 +8,8 @@
 
 import { type Socket, connect } from "node:net";
 
-import { formatGrant } from "@agentic-pi/core";
-import type { Budget } from "@agentic-pi/core";
+import { formatGrant } from "pi-agentic-core";
+import type { Budget, Decision, ToolRequest } from "pi-agentic-core";
 import type {
 	ApprovalRow,
 	CompleteResult,
@@ -30,7 +30,7 @@ import {
 } from "./control-client.ts";
 
 const EMPTY_BUDGET: Budget = { tokens: 0, costUsd: 0, wallClockSec: 0 };
-const EMPTY_SNAPSHOT: WorkerSnapshot = { unit: null, task: null, remainingBudget: EMPTY_BUDGET };
+const EMPTY_SNAPSHOT: WorkerSnapshot = { unit: null, task: null, remainingBudget: EMPTY_BUDGET, notifications: [] };
 
 interface Pending {
 	resolve: (value: unknown) => void;
@@ -78,6 +78,13 @@ export class SocketControlClient extends BaseControlClient {
 				this.failAll(e);
 				reject(e);
 			});
+			// A graceful server FIN (or any close) must not leave callers hanging forever.
+			// We do not auto-reconnect: once the control plane drops us, every pending and
+			// future call rejects (the worker lifecycle is tied to a live control plane).
+			sock.on("close", () => {
+				this.failAll(new Error("connection closed by control plane"));
+				this.sock = null;
+			});
 			sock.once("connect", () => {
 				this.call("hello", {
 					version: PROTOCOL_VERSION,
@@ -122,7 +129,7 @@ export class SocketControlClient extends BaseControlClient {
 
 	private call(method: RpcMethod, params: Record<string, unknown>): Promise<unknown> {
 		const sock = this.sock;
-		if (!sock) return Promise.reject(new Error("socket not connected"));
+		if (!sock || sock.destroyed || sock.writableEnded) return Promise.reject(new Error("socket is closed"));
 		const id = this.nextId++;
 		return new Promise<unknown>((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -168,6 +175,11 @@ export class SocketControlClient extends BaseControlClient {
 		return (await this.call("meter", { taskId, usage })) as MeterResult;
 	}
 
+	async recordDecision(req: ToolRequest, decision: Decision): Promise<void> {
+		await this.connectAndHello();
+		await this.call("record_decision", { toolName: req.toolName, paths: req.paths, allow: decision.allow, reason: decision.allow ? null : decision.reason });
+	}
+
 	async listApprovals(): Promise<ApprovalRow[]> {
 		await this.connectAndHello();
 		return (await this.call("list_approvals", {})) as ApprovalRow[];
@@ -176,6 +188,11 @@ export class SocketControlClient extends BaseControlClient {
 	async resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow> {
 		await this.connectAndHello();
 		return (await this.call("resolve_approval", { id, decision, ...(choice !== undefined ? { choice } : {}) })) as ApprovalRow;
+	}
+
+	async ackNotification(id: string): Promise<void> {
+		await this.connectAndHello();
+		await this.call("ack_notification", { id });
 	}
 
 	close(): void {

@@ -49,3 +49,17 @@ test("effective grants drop task grants the unit does not hold", () => {
 	assert.deepEqual(effectiveGrants(unit, undefined), unit);
 	assert.deepEqual(effectiveGrants(unit, parseGrants(["tool:read", "tool:bash"])), parseGrants(["tool:read"]));
 });
+
+test("effectiveGrants narrows partially covered task grants to the true intersection", () => {
+	const g = parseGrants;
+	// task wider than unit: narrowed to the unit's grant
+	assert.deepEqual(effectiveGrants(g(["path:r:/a/b/**"]), g(["path:rw:/a/**"])), g(["path:r:/a/b/**"]));
+	// task rw, unit r on same path: downgraded to r
+	assert.deepEqual(effectiveGrants(g(["path:r:/a/b"]), g(["path:rw:/a/b"])), g(["path:r:/a/b"]));
+	// tool wildcard in task narrows to unit's specific tools, never to shell
+	assert.deepEqual(effectiveGrants(g(["tool:read", "tool:bash"]), g(["tool:*"])), g(["tool:read"]));
+	// disjoint: dropped
+	assert.deepEqual(effectiveGrants(g(["path:rw:/x/**"]), g(["path:rw:/y/**"])), []);
+	// fully covered stays as-is, no duplicates
+	assert.deepEqual(effectiveGrants(g(["path:rw:/a/**", "tool:read"]), g(["path:rw:/a/b", "path:rw:/a/b", "tool:read"])), g(["path:rw:/a/b", "tool:read"]));
+});

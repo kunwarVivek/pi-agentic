@@ -5,7 +5,7 @@
  *   node scripts/smoke-anchor.ts <control.db>
  */
 import { DatabaseSync } from "node:sqlite";
-import { ControlStore } from "@agentic-pi/control-plane";
+import { ControlStore } from "pi-agentic-control-plane";
 
 const db = process.argv[2];
 if (!db) {
@@ -20,6 +20,8 @@ store.close();
 
 // Tamper: flip an actor on the head row directly in sqlite.
 const raw = new DatabaseSync(db);
+// audit is append-only via triggers; drop the UPDATE trigger on this raw connection to simulate an attacker with file access.
+raw.exec("DROP TRIGGER IF EXISTS audit_no_update");
 raw.exec("UPDATE audit SET actor = 'mallory:x' WHERE seq = (SELECT MAX(seq) FROM audit)");
 raw.close();
 

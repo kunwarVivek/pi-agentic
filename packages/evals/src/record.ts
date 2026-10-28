@@ -8,7 +8,7 @@
  * one is a `ControlStore`, whose `recordEval(unitId, suite, passed, total)`
  * already appends an `eval.record` audit entry and persists an `EvalRow`.
  */
-import type { EvalRow } from "@agentic-pi/control-plane";
+import type { EvalRow } from "pi-agentic-control-plane";
 import { runSuite, type EvalSuite, type Solver, type SuiteResult } from "./runner.ts";
 
 /** The slice of the control store the eval runner writes through. */

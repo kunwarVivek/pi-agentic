@@ -1,6 +1,6 @@
 # ADR-0004: Use our own SQLite task state machine; defer pi-durable
 
-Status: Accepted · 2026-10-26
+Status: Superseded by ADR-0009 · 2026-10-26
 
 ## Context
 `@earendil-works/pi-durable` 1.4.0 is marked "Experimental. API changes without notice". It is a separate harness with its own extension API. It has no locking across processes.

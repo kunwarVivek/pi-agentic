@@ -7,9 +7,9 @@ Extensions run in the same process as the agent, with full OS permissions. A `to
 
 ## Decision
 1. The `org-policy` hook enforces deny-by-default grants for every tool. It resolves paths of structured file tools with realpath before matching. If the policy check throws, the tool call is blocked.
-2. `bash` is denied unless the unit holds the `tool:bash` grant. Units with that grant must run under an OS boundary. In S6 this is a separate Unix user per unit and systemd hardening, plus bubblewrap on Linux or Gondolin for bash.
-3. The trust boundary is the OS user or VM. The hook is defence in depth plus intent control.
+2. `bash` is denied unless the unit holds the exact `tool:bash` grant (`tool:*` and other wildcards never cover a shell tool). A granted bash call is confined by the same hook: on an allow, the `tool_call` handler rewrites `input.command` to a single shell-quoted `bwrap … /bin/bash -c '<original>'` line built by `buildBwrapCommand` from the unit's path grants, which Pi's bash tool then executes. The deploy renderer sets `ORG_BWRAP=1` (and optionally `ORG_BWRAP_BIN`) for units holding `tool:bash`. Without `ORG_BWRAP`, the granted bash call is blocked (fail closed) unless `AGENTIC_PI_DEV=1` or `AGENTIC_PI_UNSANDBOXED_BASH=1` explicitly opts out. `powershell` cannot be routed through bwrap and is blocked when sandboxing is required.
+3. The trust boundary is the OS user or VM (a separate Unix user per unit plus systemd hardening, S6). The hook, including the bwrap rewrite, is defence in depth plus intent control.
 
 ## Consequences
 - \+ We get fast and testable policy with clear reasons in the audit log.
-- \- The guarantees for bash depend on how the deployment is set up. The deployment guide must not let `tool:bash` ship without a sandbox.
+- \- The guarantees for bash still depend on the deployment: `ORG_BWRAP=1` and a working `bwrap` binary must be present on the host. When they are absent the call fails closed rather than running unsandboxed.

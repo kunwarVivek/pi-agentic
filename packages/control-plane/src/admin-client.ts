@@ -9,7 +9,8 @@
 
 import { type Socket, connect } from "node:net";
 
-import type { ApprovalRow } from "./store-control.ts";
+import type { SyncReport } from "./unit-sync.ts";
+import type { ApprovalRow, NotificationRow } from "./store-control.ts";
 import {
 	LineDecoder,
 	PROTOCOL_VERSION,
@@ -56,6 +57,7 @@ export class AdminClient {
 				this.failAll(e);
 				reject(e);
 			});
+			sock.on("close", () => this.failAll(new Error("connection closed by control plane")));
 			sock.once("connect", () => {
 				this.call("hello", { version: PROTOCOL_VERSION, token: this.token }).then(() => resolve(), reject);
 			});
@@ -87,6 +89,12 @@ export class AdminClient {
 		this.pending.clear();
 	}
 
+	/** Reconcile the running control plane's units with raw (unparsed) unit.json manifests. Admin-only. */
+	async syncUnits(manifests: readonly unknown[]): Promise<SyncReport> {
+		await this.connectAndHello();
+		return (await this.call("sync_units", { manifests })) as SyncReport;
+	}
+
 	private call(method: RpcMethod, params: Record<string, unknown>): Promise<unknown> {
 		const sock = this.sock;
 		if (!sock) return Promise.reject(new Error("socket not connected"));
@@ -105,6 +113,17 @@ export class AdminClient {
 	async resolveApproval(id: string, decision: "approved" | "denied", choice?: string): Promise<ApprovalRow> {
 		await this.connectAndHello();
 		return (await this.call("resolve_approval", { id, decision, ...(choice !== undefined ? { choice } : {}) })) as ApprovalRow;
+	}
+
+	/** Unacknowledged notifications across every owner (owner inbox, FR8). */
+	async listNotifications(): Promise<NotificationRow[]> {
+		await this.connectAndHello();
+		return (await this.call("list_notifications", {})) as NotificationRow[];
+	}
+
+	async ackNotification(id: string): Promise<void> {
+		await this.connectAndHello();
+		await this.call("ack_owner_notification", { id });
 	}
 
 	close(): void {

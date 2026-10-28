@@ -5,8 +5,8 @@
  *   node scripts/smoke-bwrap.ts "<bash command>"
  */
 import { spawnSync } from "node:child_process";
-import { buildBwrapCommand } from "@agentic-pi/deploy";
-import { parseGrants } from "@agentic-pi/core";
+import { buildBwrapCommand } from "pi-agentic-deploy";
+import { parseGrants } from "pi-agentic-core";
 
 const command = process.argv[2];
 if (!command) {

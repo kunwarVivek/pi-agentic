@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ControlStore } from "../src/store-control.ts";
-import { parseManifest, type Budget, type Manifest } from "@agentic-pi/core";
-import type { Contract } from "@agentic-pi/core";
+import { parseManifest, type Budget, type Manifest } from "pi-agentic-core";
+import type { Contract } from "pi-agentic-core";
 import { LineDecoder, encodeLine, PROTOCOL_VERSION } from "../src/protocol.ts";
 import { PeerRegistry, authenticate } from "../src/auth.ts";
 import { ControlServer } from "../src/server.ts";
@@ -218,6 +218,43 @@ test("SocketControlClient: hello handshake, snapshot, delegate round-trip", asyn
 	}
 });
 
+test("notifications: delegator sees task.done in its snapshot, acks over RPC, cannot ack another unit's (FR4)", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const ceoToken = reg.issueToken("ceo");
+	const salesToken = reg.issueToken("sales");
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	const ceo = new SocketControlClient({ unitId: "ceo", taskId: null, socketPath, token: ceoToken });
+	const sales = new SocketControlClient({ unitId: "sales", taskId: null, socketPath, token: salesToken });
+	try {
+		const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "sell", contract: CONTRACT, budget: smallBudget });
+		assert.ok(d.ok);
+		store.startTask(d.taskId);
+		const done = await store.completeTask(d.taskId, { summary: "ok" });
+		assert.ok(done.ok);
+
+		const snap = await ceo.refresh();
+		assert.equal(snap.notifications.length, 1);
+		const note = snap.notifications[0];
+		assert.equal(note?.kind, "task.done");
+		assert.equal(note?.subject, d.taskId);
+		assert.equal((await sales.refresh()).notifications.length, 0);
+
+		await assert.rejects(() => sales.ackNotification(note?.id ?? ""), /notification/);
+		assert.equal((await ceo.refresh()).notifications.length, 1, "foreign ack must not consume it");
+
+		await ceo.ackNotification(note?.id ?? "");
+		assert.deepEqual((await ceo.refresh()).notifications, []);
+		await assert.rejects(() => ceo.ackNotification(note?.id ?? ""), /notification/);
+	} finally {
+		ceo.close();
+		sales.close();
+		await server.close();
+		cleanup();
+	}
+});
+
 test("SocketControlClient: unauthenticated when no credential maps", async () => {
 	const { store, socketPath, cleanup } = fixtures();
 	const server = new ControlServer({ store, auth: new PeerRegistry() });
@@ -273,6 +310,66 @@ test("AdminClient: a bad admin token is rejected at hello", async () => {
 
 // ---- dispatcher ----------------------------------------------------------
 
+test("hello with a pinned task not owned by the caller is rejected", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const token = reg.issueToken("eng");
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	// A task assigned to sales, not eng.
+	const d = store.delegate({ fromUnit: "ceo", toUnit: "sales", goal: "sell", contract: CONTRACT, budget: smallBudget });
+	assert.ok(d.ok);
+	const client = new SocketControlClient({ unitId: "eng", taskId: d.ok ? d.taskId : null, socketPath, token });
+	try {
+		await assert.rejects(() => client.connectAndHello(), /forbidden/);
+	} finally {
+		client.close();
+		await server.close();
+		cleanup();
+	}
+});
+
+test("pending RPCs reject when the server closes the connection", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const token = reg.issueToken("ceo");
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	const client = new SocketControlClient({ unitId: "ceo", taskId: null, socketPath, token });
+	try {
+		await client.connectAndHello();
+		await server.close();
+		// The socket is gone; a fresh call must reject rather than hang forever.
+			await assert.rejects(() => client.refresh(), /closed|socket|EPIPE|ECONN|reset/);
+	} finally {
+		client.close();
+		cleanup();
+	}
+});
+
+test("concurrent delegations over one connection do not nest transactions", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const token = reg.issueToken("ceo");
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	const client = new SocketControlClient({ unitId: "ceo", taskId: null, socketPath, token });
+	try {
+		await client.connectAndHello();
+		const tiny: Budget = { tokens: 10, costUsd: 0, wallClockSec: 1 };
+		const results = await Promise.all([
+			client.delegate({ toUnit: "sales", goal: "a", contract: CONTRACT, budget: tiny }),
+			client.delegate({ toUnit: "sales", goal: "b", contract: CONTRACT, budget: tiny }),
+			client.delegate({ toUnit: "sales", goal: "c", contract: CONTRACT, budget: tiny }),
+		]);
+		assert.ok(results.every((r) => r.ok), "all three delegations succeed without a nested-transaction error");
+	} finally {
+		client.close();
+		await server.close();
+		cleanup();
+	}
+});
+
 test("Dispatcher.tick starts pending tasks and wires ORG_* env", async () => {
 	const { store, socketPath, cleanup } = fixtures();
 	try {
@@ -317,7 +414,7 @@ test("Dispatcher skips inactive units and records spawn errors", async () => {
 		assert.deepEqual(await dispatcher.tick(), [], "suspended unit is skipped");
 		assert.equal(store.getTask(d.ok ? d.taskId : "")?.status, "pending");
 
-		// Reactivate; spawner throws → task still marked running, error audited.
+		// Reactivate; spawner throws → task must not stay running: it escalates (retry/cancel), error audited.
 		store.setUnitStatus("sales", "active");
 		const failing = new Dispatcher({
 			store,
@@ -327,10 +424,52 @@ test("Dispatcher skips inactive units and records spawn errors", async () => {
 			},
 		});
 		assert.deepEqual(await failing.tick(), []);
-		assert.equal(store.getTask(d.ok ? d.taskId : "")?.status, "running");
+		assert.equal(store.getTask(d.ok ? d.taskId : "")?.status, "escalated");
 		const audit = store.auditEntries().some((e) => e.action === "dispatch.error");
 		assert.ok(audit, "spawn error is audited");
 	} finally {
+		cleanup();
+	}
+});
+
+test("recordDecision over the socket audits as the authenticated unit; claimed unit is ignored; admin refused", async () => {
+	const { store, socketPath, cleanup } = fixtures();
+	const reg = new PeerRegistry();
+	const token = reg.issueToken("sales");
+	const adminToken = reg.issueAdminToken();
+	const server = new ControlServer({ store, auth: reg });
+	await server.listen(socketPath);
+	const client = new SocketControlClient({ unitId: "sales", taskId: null, socketPath, token });
+	try {
+		await client.recordDecision({ toolName: "write", paths: [{ path: "/d/sales/a", mode: "rw" }] }, { allow: false, reason: "nope" });
+		await client.recordDecision({ toolName: "read", paths: [] }, { allow: true });
+		const rows = store.auditEntries().filter((e) => e.action.startsWith("tool."));
+		assert.deepEqual(rows.map((r) => [r.actor, r.action, r.subject]), [
+			["policy:sales", "tool.deny", "write"],
+			["policy:sales", "tool.allow", "read"],
+		]);
+		assert.ok(store.verifyAudit().ok);
+
+		// A client-claimed unit in params is never honoured.
+		const session = { unitId: "sales", admin: false };
+		await server.handleRequest(
+			{ id: 1, method: "record_decision", params: { unitId: "ceo", toolName: "x", allow: true, paths: [] } },
+			session,
+			null,
+		);
+		assert.equal(store.auditEntries().at(-1)?.actor, "policy:sales");
+
+		// Malformed requests are rejected and write nothing.
+		const n = store.auditEntries().length;
+		const bad = await server.handleRequest({ id: 2, method: "record_decision", params: { toolName: "x", allow: true, paths: [{ path: 1 }] } }, session, null);
+		assert.equal(bad.ok, false);
+		const adm = await server.handleRequest({ id: 3, method: "record_decision", params: { toolName: "x", allow: true, paths: [] } }, { unitId: "", admin: true }, null);
+		assert.equal(adm.ok, false);
+		assert.equal(store.auditEntries().length, n);
+		void adminToken;
+	} finally {
+		client.close();
+		await server.close();
 		cleanup();
 	}
 });

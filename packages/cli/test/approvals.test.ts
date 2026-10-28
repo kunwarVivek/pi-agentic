@@ -10,14 +10,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseManifest, type Budget, type Manifest } from "@agentic-pi/core";
-import type { Contract } from "@agentic-pi/core";
+import { parseManifest, type Budget, type Manifest } from "pi-agentic-core";
+import type { Contract } from "pi-agentic-core";
 import {
 	ControlServer,
 	ControlStore,
 	PeerRegistry,
 	type ApprovalRow,
-} from "@agentic-pi/control-plane";
+} from "pi-agentic-control-plane";
 import { formatApproval, runApprovals, type Inbox } from "../src/approvals.ts";
 import { runCli } from "../src/main.ts";
 
@@ -32,6 +32,7 @@ const APPROVAL = (over: Partial<ApprovalRow> = {}): ApprovalRow => ({
 	decidedBy: null,
 	expiresAt: "2026-01-02T00:00:00.000Z",
 	createdAt: "2026-01-01T00:00:00.000Z",
+	holderUnitId: "sales",
 	...over,
 });
 

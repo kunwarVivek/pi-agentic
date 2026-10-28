@@ -1,27 +1,52 @@
 {
-  "name": "@agentic-pi/cli",
-  "version": "0.1.0",
-  "description": "agentic-pi operator CLI (`org`): the human control-host tool for the approval inbox and other operator verbs, speaking to the control plane over its Unix socket with an admin token.",
-  "license": "MIT",
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "files": ["dist", "src", "!**/*.test.ts"],
-  "bin": {
-    "org": "./dist/main.js"
-  },
-  "exports": {
-    ".": {
-      "development": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "scripts": {
-    "build": "tsc --build",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@agentic-pi/core": "0.1.0",
-    "@agentic-pi/control-plane": "0.1.0"
-  }
+	"name": "pi-agentic-cli",
+	"version": "0.1.0",
+	"description": "agentic-pi operator CLI (`org`): the human control-host tool for the approval inbox and other operator verbs, speaking to the control plane over its Unix socket with an admin token.",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunwarVivek/pi-agentic.git",
+		"directory": "packages/cli"
+	},
+	"homepage": "https://github.com/kunwarVivek/pi-agentic#readme",
+	"bugs": {
+		"url": "https://github.com/kunwarVivek/pi-agentic/issues"
+	},
+	"keywords": [
+		"agentic-pi",
+		"cli",
+		"approvals",
+		"operator"
+	],
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"bin": {
+		"org": "./dist/main.js"
+	},
+	"exports": {
+		".": {
+			"development": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"typecheck": "tsc --noEmit",
+		"prepack": "tsc --build"
+	},
+	"dependencies": {
+		"pi-agentic-core": "0.1.0",
+		"pi-agentic-control-plane": "0.1.0"
+	}
 }

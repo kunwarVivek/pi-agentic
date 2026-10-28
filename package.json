@@ -1,26 +1,40 @@
 {
-  "name": "agentic-pi",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "workspaces": [
-    "packages/core",
-    "packages/control-plane",
-    "packages/extension",
-    "packages/deploy",
-    "packages/cli",
-    "packages/evals"
-  ],
-  "scripts": {
-    "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
-    "build": "tsc --build",
-    "clean": "tsc --build --clean",
-    "test": "node --conditions development --experimental-strip-types --test 'packages/*/test/**/*.test.ts'",
-    "check": "npm run typecheck && npm test"
-  },
-  "devDependencies": {
-    "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
-  }
+	"name": "agentic-pi",
+	"version": "0.1.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunwarVivek/pi-agentic.git"
+	},
+	"homepage": "https://github.com/kunwarVivek/pi-agentic#readme",
+	"bugs": {
+		"url": "https://github.com/kunwarVivek/pi-agentic/issues"
+	},
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"workspaces": [
+		"packages/core",
+		"packages/control-plane",
+		"packages/extension",
+		"packages/deploy",
+		"packages/cli",
+		"packages/evals",
+		"packages/durable"
+	],
+	"scripts": {
+		"typecheck": "tsc --build && tsc -p tsconfig.tests.json",
+		"build": "tsc --build",
+		"clean": "tsc --build --clean",
+		"test": "node --conditions development --experimental-strip-types --test 'packages/*/test/**/*.test.ts'",
+		"check": "npm run typecheck && npm test",
+		"smoke:pi": "npm run build && node --conditions development --experimental-strip-types scripts/smoke-pi-ext.ts",
+		"simulate:org": "npm run build && node --conditions development --experimental-strip-types scripts/simulate-org.ts",
+		"release:check": "node --experimental-strip-types scripts/release-check.ts"
+	},
+	"devDependencies": {
+		"@types/node": "24.19.2",
+		"typescript": "5.9.3"
+	}
 }

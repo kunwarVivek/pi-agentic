@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlStore } from "@agentic-pi/control-plane";
-import { parseManifest } from "@agentic-pi/core";
-import type { Budget, Contract, JudgeFn } from "@agentic-pi/core";
+import { ControlStore } from "pi-agentic-control-plane";
+import { parseManifest } from "pi-agentic-core";
+import type { Budget, Contract, JudgeFn } from "pi-agentic-core";
 import { runSuite, type EvalSuite, type Solver } from "../src/runner.ts";
 import { parseSuite, EvalSuiteError } from "../src/suite.ts";
 import { runAndRecord, type EvalRecorder } from "../src/record.ts";
@@ -192,4 +192,38 @@ test("runAndRecord → sweepLifecycle deprecates a unit below min_eval", async (
 		store.close();
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("runSuite: a throwing judge fails that case only (fail closed)", async () => {
+	const jc: Contract = { ...SUMMARY, judge: true };
+	const s = suite(
+		[
+			{ id: "j", prompt: "p", contract: jc },
+			{ id: "ok", prompt: "q", contract: SUMMARY },
+		],
+		async () => {
+			throw new Error("judge exploded");
+		},
+	);
+	const r = await runSuite(s, async () => ({ summary: "ok" }));
+	assert.equal(r.total, 2);
+	const j = r.cases.find((c) => c.id === "j");
+	assert.equal(j?.pass, false);
+	assert.ok(j!.reasons.some((x) => x.includes("judge exploded")));
+	assert.equal(r.cases.find((c) => c.id === "ok")?.pass, true);
+	assert.equal(r.passed, 1);
+});
+
+test("parseSuite: invalid / ReDoS-prone / oversized forbiddenPatterns are rejected at parse", () => {
+	const mk = (pat: string) => ({
+		name: "s",
+		cases: [{ id: "a", prompt: "p", contract: { schema: {}, rules: { forbiddenPatterns: [pat] } } }],
+	});
+	for (const bad of ["(", "(a+)+$", "(a|aa)*", "(a)\\1", "a".repeat(300), ".*.*.*.*x", "\\w+\\w+\\w+$", ".+.+", "a*a*"]) {
+		assert.throws(() => parseSuite(mk(bad)), EvalSuiteError, bad);
+	}
+	assert.doesNotThrow(() => parseSuite(mk("sk-[A-Za-z0-9]{20,}")));
+	assert.doesNotThrow(() => parseSuite(mk("password")));
+	assert.doesNotThrow(() => parseSuite(mk("a\\\\1"))); // escaped backslash then '1' is not a backreference
+	assert.doesNotThrow(() => parseSuite(mk("\\w+-\\w+")));
 });

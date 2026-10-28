@@ -7,7 +7,7 @@
  * wires it to stdout and a real socket.
  */
 
-import type { ApprovalRow } from "@agentic-pi/control-plane";
+import type { ApprovalRow } from "pi-agentic-control-plane";
 
 /** The subset of AdminClient the approvals command needs (keeps it testable). */
 export interface Inbox {

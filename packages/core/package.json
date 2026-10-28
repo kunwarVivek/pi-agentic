@@ -1,20 +1,46 @@
 {
-  "name": "@agentic-pi/core",
-  "version": "0.1.0",
-  "description": "Pure, I/O-free kernel for agentic-pi: manifests, grants, policy PDP, audit hash chain + anchor, budget math, gate pipeline. Zero runtime dependencies.",
-  "license": "MIT",
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "files": ["dist", "src", "!**/*.test.ts"],
-  "exports": {
-    ".": {
-      "development": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "scripts": {
-    "build": "tsc --build",
-    "typecheck": "tsc --noEmit"
-  }
+	"name": "pi-agentic-core",
+	"version": "0.1.0",
+	"description": "Pure, I/O-free kernel for agentic-pi: manifests, grants, policy PDP, audit hash chain + anchor, budget math, gate pipeline. Zero runtime dependencies.",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunwarVivek/pi-agentic.git",
+		"directory": "packages/core"
+	},
+	"homepage": "https://github.com/kunwarVivek/pi-agentic#readme",
+	"bugs": {
+		"url": "https://github.com/kunwarVivek/pi-agentic/issues"
+	},
+	"keywords": [
+		"agentic-pi",
+		"policy",
+		"audit",
+		"budget",
+		"grants"
+	],
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"exports": {
+		".": {
+			"development": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc --build",
+		"typecheck": "tsc --noEmit",
+		"prepack": "tsc --build"
+	}
 }

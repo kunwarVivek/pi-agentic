@@ -1,11 +1,26 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/control-plane" },
-    { "path": "./packages/extension" },
-    { "path": "./packages/deploy" },
-    { "path": "./packages/cli" },
-    { "path": "./packages/evals" }
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/control-plane"
+    },
+    {
+      "path": "./packages/extension"
+    },
+    {
+      "path": "./packages/deploy"
+    },
+    {
+      "path": "./packages/cli"
+    },
+    {
+      "path": "./packages/evals"
+    },
+    {
+      "path": "./packages/durable"
+    }
   ]
 }

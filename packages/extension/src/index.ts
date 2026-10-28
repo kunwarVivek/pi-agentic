@@ -4,8 +4,9 @@
  * shared control-plane runtime.
  *
  * Load in dev with: pi -e packages/extension/src/index.ts
- * The extension is inert unless ORG_UNIT_ID and ORG_CONTROL_DB are set in the
- * environment (so a plain `pi -e` session is unaffected).
+ * Fail closed: without org configuration (ORG_UNIT_ID + ORG_CONTROL_SOCKET, plus
+ * a valid unit.json at ORG_UNIT_MANIFEST) every tool call is blocked. Only
+ * AGENTIC_PI_DEV=1 makes it inert / allows the in-process control.db client.
  */
 
 import { bootstrap } from "./bootstrap.ts";

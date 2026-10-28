@@ -10,8 +10,8 @@
  * is rejected (anti-forgery, SPEC threat model).
  */
 
-import type { Budget } from "@agentic-pi/core";
-import type { Contract } from "@agentic-pi/core";
+import type { Budget } from "pi-agentic-core";
+import type { Contract } from "pi-agentic-core";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -23,8 +23,14 @@ export type RpcMethod =
 	| "complete_task"
 	| "escalate"
 	| "meter"
+	| "record_decision"
 	| "list_approvals"
-	| "resolve_approval";
+	| "resolve_approval"
+	| "ack_notification"
+	| "list_notifications"
+	| "ack_owner_notification"
+	/** Admin-only: reconcile units with authored unit.json manifests (additive, audited). */
+	| "sync_units";
 
 export interface RpcRequest {
 	/** Correlation id chosen by the client; echoed in the response. */
@@ -110,7 +116,8 @@ export class LineDecoder {
 
 	push(chunk: string): unknown[] {
 		this.buffer += chunk;
-		if (this.buffer.length > this.max) {
+		// Measure UTF-8 bytes, not UTF-16 code units, so the cap is a true byte budget.
+		if (Buffer.byteLength(this.buffer, "utf8") > this.max) {
 			this.buffer = "";
 			throw new Error("rpc line exceeded maximum length");
 		}

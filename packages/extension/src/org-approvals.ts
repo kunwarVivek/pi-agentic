@@ -11,9 +11,9 @@
  *   /approvals deny <id> [choice]
  */
 
-import type { ApprovalRow } from "@agentic-pi/control-plane";
+import type { ApprovalRow } from "pi-agentic-control-plane";
 import type { OrgRuntime } from "./bootstrap.ts";
-import type { CommandContext, ExtensionAPI } from "./pi-api.ts";
+import type { ExtensionAPI, ExtensionCommandContext } from "./pi-api.ts";
 
 function formatApproval(a: ApprovalRow): string {
 	const opts = a.options.length ? ` [${a.options.join(", ")}]` : "";
@@ -25,8 +25,8 @@ export function installOrgApprovals(pi: ExtensionAPI, runtime: OrgRuntime): void
 
 	pi.registerCommand("approvals", {
 		description: "List or resolve approvals routed to this unit's owner (approve/deny <id> [choice]).",
-		handler: async (args: string, ctx: CommandContext) => {
-			const notify = ctx.ui?.notify ?? (() => {});
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			const notify = (message: string): void => ctx.ui?.notify?.(message, "info");
 			const client = runtime.client;
 			if (!client) {
 				await notify("approvals: control plane not ready");

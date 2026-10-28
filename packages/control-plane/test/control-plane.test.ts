@@ -11,8 +11,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseManifest, type Budget, type Manifest } from "@agentic-pi/core";
-import type { Contract } from "@agentic-pi/core";
+import { parseManifest, type Budget, type Manifest } from "pi-agentic-core";
+import type { Contract } from "pi-agentic-core";
 import { startControlPlane } from "../src/control-plane.ts";
 import type { WorkerSpec } from "../src/dispatcher.ts";
 

@@ -95,6 +95,13 @@ export interface PeerCredential {
 	uid?: number;
 	/** Token presented by the worker in `hello` (dev). */
 	token?: string;
+	/**
+	 * Unit this connection's socket is bound to (per-unit socket, ADR-0003). The
+	 * socket path IS the identity; the OS decides who can connect to it.
+	 */
+	boundUnit?: string;
+	/** Unit id the client claims in `hello` (rejected if it differs from boundUnit). */
+	claimedUnit?: string;
 }
 
 /**
@@ -104,6 +111,15 @@ export interface PeerCredential {
  * Returns null when nothing matches — the caller must then reject every request.
  */
 export function authenticate(auth: Authenticator, cred: PeerCredential): Principal | null {
+	if (cred.boundUnit !== undefined) {
+		// Per-unit socket: identity = socket. Any conflicting claim (another unit
+		// id, the admin token, or another unit's token) is a hard reject.
+		if (cred.claimedUnit !== undefined && cred.claimedUnit !== cred.boundUnit) return null;
+		if (auth.isAdminToken(cred.token)) return null;
+		const tokenUnit = auth.byToken(cred.token);
+		if (tokenUnit !== null && tokenUnit !== cred.boundUnit) return null;
+		return { kind: "unit", unitId: cred.boundUnit };
+	}
 	const byUid = auth.byUid(cred.uid);
 	if (byUid) return { kind: "unit", unitId: byUid };
 	if (auth.isAdminToken(cred.token)) return { kind: "admin" };
@@ -111,3 +127,6 @@ export function authenticate(auth: Authenticator, cred: PeerCredential): Princip
 	if (byToken) return { kind: "unit", unitId: byToken };
 	return null;
 }
+
+/** Prefix of the dedicated Unix user/group of a unit worker (`pi-u-<id>`). */
+export const UNIT_USER_PREFIX = "pi-u-";

@@ -1,5 +1,5 @@
 /**
- * @agentic-pi/core — the pure, I/O-free kernel.
+ * pi-agentic-core — the pure, I/O-free kernel.
  *
  * Every export here is deterministic and dependency-free (ADR-0001): manifest
  * parsing, grant algebra, the policy PDP, the audit hash chain + off-host
@@ -13,3 +13,4 @@ export * from "./budget.ts";
 export * from "./delegation.ts";
 export * from "./gates.ts";
 export * from "./audit.ts";
+export * from "./regex-safety.ts";

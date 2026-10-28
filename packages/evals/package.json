@@ -1,6 +1,6 @@
 {
 	"name": "pi-agentic-evals",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "agentic-pi eval runner: run a unit's eval suite (prompt cases checked against gate contracts) with an injectable solver, then record the pass rate through the control plane so FR8 lifecycle can deprecate under-performing units.",
 	"repository": {
 		"type": "git",
@@ -41,7 +41,7 @@
 		"prepack": "tsc --build"
 	},
 	"dependencies": {
-		"pi-agentic-core": "0.1.0",
-		"pi-agentic-control-plane": "0.1.0"
+		"pi-agentic-core": "0.1.1",
+		"pi-agentic-control-plane": "0.1.1"
 	}
 }

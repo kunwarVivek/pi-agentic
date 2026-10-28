@@ -1,6 +1,6 @@
 {
 	"name": "pi-agentic-cli",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "agentic-pi operator CLI (`org`): the human control-host tool for the approval inbox and other operator verbs, speaking to the control plane over its Unix socket with an admin token.",
 	"repository": {
 		"type": "git",
@@ -46,7 +46,7 @@
 		"prepack": "tsc --build"
 	},
 	"dependencies": {
-		"pi-agentic-core": "0.1.0",
-		"pi-agentic-control-plane": "0.1.0"
+		"pi-agentic-core": "0.1.1",
+		"pi-agentic-control-plane": "0.1.1"
 	}
 }

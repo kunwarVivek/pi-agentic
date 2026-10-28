@@ -1,7 +1,7 @@
 {
 	"name": "pi-agentic",
-	"version": "0.1.0",
-	"description": "Loadable Pi extension for agentic-pi: default-deny tool policy (PEP), secret redaction, org delegate/complete/escalate tools, identity/grants/budget context injection, grant-grounded project trust, and per-turn budget metering.",
+	"version": "0.1.1",
+	"description": "Pi extension that turns a session into a governed agentic-org unit: default-deny, audited tool policy; bubblewrap-sandboxed bash; secret redaction; budget metering with escalation; org delegate/complete/escalate tools; manifest-listed project trust.",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/kunwarVivek/pi-agentic.git",
@@ -54,8 +54,8 @@
 		"prepack": "tsc --build"
 	},
 	"dependencies": {
-		"pi-agentic-core": "0.1.0",
-		"pi-agentic-control-plane": "0.1.0",
-		"pi-agentic-deploy": "0.1.0"
+		"pi-agentic-core": "0.1.1",
+		"pi-agentic-control-plane": "0.1.1",
+		"pi-agentic-deploy": "0.1.1"
 	}
 }

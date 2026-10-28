@@ -1,6 +1,6 @@
 {
 	"name": "pi-agentic-deploy",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "agentic-pi deployment generators: hardened systemd unit files (one Unix user per unit), bubblewrap sandbox argv from a unit's path grants, and a render CLI that turns a live control.db into installable unit files.",
 	"repository": {
 		"type": "git",
@@ -46,7 +46,7 @@
 		"prepack": "tsc --build"
 	},
 	"dependencies": {
-		"pi-agentic-core": "0.1.0",
-		"pi-agentic-control-plane": "0.1.0"
+		"pi-agentic-core": "0.1.1",
+		"pi-agentic-control-plane": "0.1.1"
 	}
 }

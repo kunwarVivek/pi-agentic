@@ -1,6 +1,6 @@
 {
 	"name": "pi-agentic-durable",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "agentic-pi durable worker: one pi-durable Harness per task (single-owner SQLite storage), with org policy (PEP), redaction, budget metering and delegate/complete/escalate tools.",
 	"repository": {
 		"type": "git",
@@ -46,9 +46,9 @@
 		"prepack": "tsc --build"
 	},
 	"dependencies": {
-		"pi-agentic-control-plane": "0.1.0",
-		"pi-agentic-core": "0.1.0",
-		"pi-agentic": "0.1.0",
+		"pi-agentic-control-plane": "0.1.1",
+		"pi-agentic-core": "0.1.1",
+		"pi-agentic": "0.1.1",
 		"@earendil-works/chord": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0"

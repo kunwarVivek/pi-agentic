@@ -11,7 +11,7 @@
  * audit) register here too.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import { AdminClient, ControlStore, syncUnits } from "pi-agentic-control-plane";
 import { runApprovals } from "./approvals.ts";
@@ -56,13 +56,17 @@ export async function runCli(
 	out: (line: string) => void,
 ): Promise<number> {
 	const [command, ...rest] = argv;
+	if (command === "help" || command === "--help" || command === "-h") {
+		for (const line of USAGE) out(line);
+		return 0;
+	}
 	if (command === "units") {
 		const result = await runUnits(rest, (db) => openUnitTarget(db, env));
 		for (const line of result.lines) out(line);
 		return result.exitCode;
 	}
 	if (command !== "approvals" && command !== "notifications") {
-		out(command ? `error: unknown command '${command}'` : "usage: org <approvals|notifications|units> [args]");
+		out(command ? `error: unknown command '${command}' (see org --help)` : USAGE_LINE);
 		return 2;
 	}
 	const cfg = configFromEnv(env);
@@ -75,6 +79,18 @@ export async function runCli(
 		client.close();
 	}
 }
+
+const USAGE_LINE = "usage: org <approvals|notifications|units> [args]   (org --help for details)";
+const USAGE = [
+	USAGE_LINE,
+	"  org approvals list                      open approvals you may act on",
+	"  org approvals approve <id> [choice]     approve (choice must be one of the approval's options)",
+	"  org approvals deny <id> [choice]        deny",
+	"  org notifications [list]                unacked owner/admin notifications",
+	"  org notifications ack <id>              acknowledge a notification",
+	"  org units sync <org-root> [--db <path>] register/update units from unit.json manifests",
+	"env: ORG_CONTROL_SOCKET + ORG_ADMIN_TOKEN or ORG_ADMIN_TOKEN_FILE (not needed for units sync --db)",
+];
 
 async function main(): Promise<void> {
 	const code = await runCli(process.argv.slice(2), process.env, (line) => process.stdout.write(`${line}\n`));

@@ -2,7 +2,16 @@
 
 All notable changes to agentic-pi are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the workspace packages are versioned together
-(currently all at `0.1.0`).
+(currently all at `0.1.1`).
+
+## [0.1.1] - 2026-10-28
+
+### Fixed
+- `org --help` / `org help` / `org -h` print the full command reference (previously `unknown command`).
+- `pi-agentic` npm description: project trust comes from the manifest `trust` list, not from path grants.
+
+### Changed
+- Test fixtures build vendor-token-shaped strings at runtime so the repository passes secret scanning.
 
 ## [0.1.0] - 2026-10-28
 
@@ -69,9 +78,9 @@ First release: an agentic org on Pi 1.4.0, built from Pi extensions and `node:sq
 
 ### Known limitations
 
-- Not yet published to npm; install from a checkout.
-- There is no operator command to register units; use `ControlStore.addUnit(parseManifest(...))`.
-- `mcp:` and `host:` grants are parsed and narrowed but not yet enforced on tool calls.
-- The `pi-control` daemon does not read `ORG_WORKER_MODE` and has no judge configured: durable mode is selected
-  only programmatically, and contracts with `judge: true` are refused at delegation.
-- `org-render`'s default `ORG_ENTRYPOINT` is a stale path; always set it.
+- Only `judge: none` is supported: no LLM judge ships, so contracts with `judge: true` are refused at delegation
+  (`judge_unavailable`).
+- `host:` grants are all-or-nothing network access for sandboxed `bash`; per-host egress filtering needs an external
+  proxy or firewall.
+- The Linux deployment gate (`scripts/smoke.sh`: per-unit OS users, socket permissions, systemd, bwrap) has not been
+  run in CI.

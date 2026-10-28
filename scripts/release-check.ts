@@ -13,13 +13,12 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadWorkspacePackages } from "./workspace-packages.ts";
 
 const repo = resolve(import.meta.dirname, "..");
 const tmp = join(repo, ".tmp");
 const packDir = join(tmp, "pack");
 const consumer = join(tmp, "release-consumer");
-/** Publish order: dependencies first (this is also the order printed in the report). */
-const ORDER = ["core", "control-plane", "deploy", "extension", "cli", "evals", "durable"];
 const log = (m: string) => process.stdout.write(`${m}\n`);
 const fail = (m: string): never => {
 	throw new Error(`release:check FAIL: ${m}`);
@@ -30,12 +29,8 @@ const run = (cmd: string, args: string[], cwd = repo, env: NodeJS.ProcessEnv = p
 	return r.stdout + r.stderr;
 };
 
-interface Pkg { name: string; version: string; dir: string; json: Record<string, unknown> }
-const pkgs: Pkg[] = ORDER.map((n) => {
-	const dir = join(repo, "packages", n);
-	const json = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-	return { name: json.name, version: json.version, dir, json };
-});
+/** Publish order: dependencies first (this is also the order printed in the report). */
+const pkgs = loadWorkspacePackages(repo);
 
 // --- static metadata gates ---------------------------------------------------------------
 const rootLicense = readFileSync(join(repo, "LICENSE"), "utf8");
@@ -67,7 +62,7 @@ run("npm", ["run", "build"]);
 const tgz = new Map<string, string>();
 for (const p of pkgs) {
 	// `npm pack` runs prepack (tsc --build) itself.
-	const out = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", packDir, "-w", p.dir.slice(repo.length + 1)], repo).match(/\[\s*\{[\s\S]*\}\s*\]/)![0]);
+	const out = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", packDir, "-w", p.rel], repo).match(/\[\s*\{[\s\S]*\}\s*\]/)![0]);
 	const files: string[] = out[0].files.map((f: { path: string }) => f.path);
 	const need = ["package.json", "README.md", "LICENSE"];
 	for (const f of need) if (!files.includes(f)) fail(`${p.name} tarball lacks ${f}`);
@@ -84,7 +79,7 @@ for (const p of pkgs) {
 // --- 2. publish --dry-run -----------------------------------------------------------------
 for (const p of pkgs) {
 	// Pin the loglevel: `npm run -s release:check` exports npm_config_loglevel=silent, which would empty this output.
-	const o = run("npm", ["publish", "--dry-run", "--access", "public", "--loglevel", "notice", "-w", p.dir.slice(repo.length + 1)], repo);
+	const o = run("npm", ["publish", "--dry-run", "--access", "public", "--loglevel", "notice", "-w", p.rel], repo);
 	if (!o.includes(`${p.name}@${p.version}`) || !/dry-run/i.test(o)) fail(`${p.name}: unexpected publish --dry-run output\n${o}`);
 	log(`dry-run ok: ${p.name}@${p.version}`);
 }
@@ -100,7 +95,7 @@ writeFileSync(
 		private: true,
 		type: "module",
 		dependencies: Object.fromEntries(pkgs.map((p) => [p.name, fileSpec(p.name)])),
-		// Inter-package dependencies pin 0.1.0 from the (not yet published) registry: route them to the tarballs.
+		// Inter-package dependencies pin the release version, which may not be on the registry yet: route them to the tarballs.
 		overrides: Object.fromEntries(pkgs.map((p) => [p.name, fileSpec(p.name)])),
 	}),
 );

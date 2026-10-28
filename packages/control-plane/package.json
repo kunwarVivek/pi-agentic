@@ -32,7 +32,7 @@
 		"LICENSE"
 	],
 	"bin": {
-		"pi-control": "./dist/control-plane.js"
+		"pi-control": "dist/control-plane.js"
 	},
 	"exports": {
 		".": {

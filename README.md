@@ -8,8 +8,8 @@ It is built from Pi extensions plus `node:sqlite` only ([ADR-0001](specs/adr/000
 zero runtime dependencies in the core, Node ≥ 24, a pure I/O-free kernel, every path default-deny, and an
 injected clock for testable time. Targets Pi 1.4.0.
 
-> Status: v0.1.0, pre-release. The packages are not yet published to npm; install from a checkout (below).
-> See [CHANGELOG.md](CHANGELOG.md).
+> Status: published on npm (`pi-agentic` and the `pi-agentic-*` libraries) and listed in the
+> [Pi package gallery](https://pi.dev/packages/pi-agentic). See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it fits together
 
@@ -118,15 +118,14 @@ npm run simulate:org  # whole flow: org tree, control.db, dispatcher, headless p
 
 ## Install as a Pi package
 
-`pi-agentic` is a Pi package (`pi-package` keyword, `pi.extensions` = `./dist/index.js`). Once
-published it installs with:
+`pi-agentic` is a Pi package (`pi-package` keyword, `pi.extensions` = `./dist/index.js`):
 
 ```sh
 pi install npm:pi-agentic
 ```
 
-Until then, build and install from the checkout. For a deployed unit, install it into **that unit's own agent
-dir** so org-trust participates in `project_trust` (project-scoped extensions cannot decide trust):
+To run unreleased changes, build and install from the checkout. For a deployed unit, install it into **that
+unit's own agent dir** so org-trust participates in `project_trust` (project-scoped extensions cannot decide trust):
 
 ```sh
 npm run build

@@ -31,7 +31,8 @@
 		"check": "npm run typecheck && npm test",
 		"smoke:pi": "npm run build && node --conditions development --experimental-strip-types scripts/smoke-pi-ext.ts",
 		"simulate:org": "npm run build && node --conditions development --experimental-strip-types scripts/simulate-org.ts",
-		"release:check": "node --experimental-strip-types scripts/release-check.ts"
+		"release:check": "node --experimental-strip-types scripts/release-check.ts",
+		"publish": "node --experimental-strip-types scripts/publish.ts"
 	},
 	"devDependencies": {
 		"@types/node": "24.19.2",

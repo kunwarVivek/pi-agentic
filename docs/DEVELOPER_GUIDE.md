@@ -54,6 +54,7 @@ npm run clean         # tsc --build --clean
 npm run smoke:pi      # build, then load the extension into the real `pi` with a scripted fake model
 npm run simulate:org  # build, then a full org rehearsal under ./.tmp/sim-* (add `-- --keep` to retain)
 npm run release:check # pack + `npm publish --dry-run` + isolated consumer install; never publishes
+pnpm run publish <patch|minor|major|X.Y.Z>   # cut a release: see "Releasing" below
 sudo REPO=/opt/agentic-pi bash scripts/smoke.sh   # Linux + systemd + bwrap gate, see DEPLOY.md
 ```
 
@@ -250,7 +251,8 @@ method if it needs one. See `approvals.ts` and `notifications.ts`.
 
 Add `packages/<name>` with `package.json` (copy an existing `exports` block with the `development` condition and
 `files`), `tsconfig.json`, `src/index.ts`, `test/`, a README, and the LICENSE; add it to the root `workspaces` and
-`tsconfig.json` references, and to `scripts/release-check.ts`'s order. Keep the dependency graph acyclic.
+`tsconfig.json` references. Publish order is derived from the dependency graph (`scripts/workspace-packages.ts`),
+so keep it acyclic.
 
 ## Testing conventions
 
@@ -266,6 +268,39 @@ Add `packages/<name>` with `package.json` (copy an existing `exports` block with
   a forged `hello` that must be rejected.
 - `npm run check` must pass before a change is done; run the smoke scripts when touching hooks, bootstrap, the
   dispatcher or deploy output.
+
+## Releasing
+
+All seven packages share one version and pin each other exactly. A release is one command, run from a clean,
+up-to-date `main` with `npm login` and `gh auth login` done:
+
+```sh
+pnpm run publish minor --dry-run   # everything except commit/tag/push/publish; restores the bumped files
+pnpm run publish minor             # or patch | major | X.Y.Z
+pnpm run publish                   # no version: resume a partially published current version
+```
+
+(`npm run publish -- minor` is the same. Bare `pnpm publish` is pnpm's built-in command and refuses the private
+root package, so the script is always invoked through `run`.)
+
+What `scripts/publish.ts` does, failing closed at each step:
+
+1. **Preflight**: branch `main`, clean tree, not behind `origin/main`, all packages on one version, npm and gh
+   logged in, tag `vX.Y.Z` unused, and `CHANGELOG.md` has `## [X.Y.Z]` or a non-empty `## [Unreleased]`.
+2. **Bump**: every `version` and every inter-package pin to `X.Y.Z`, `## [Unreleased]` → `## [X.Y.Z] - <date>`,
+   `package-lock.json` (`--package-lock-only`; it refuses registry copies nested under `packages/*/node_modules`).
+3. **Gates**: `npm run check`, `smoke:pi`, `simulate:org`, `release:check`.
+4. **Git**: commit `release: vX.Y.Z`, annotated tag `vX.Y.Z` (message = the changelog section), push `main` and the
+   tag. GitHub push protection runs here, before anything reaches npm.
+5. **npm**: `npm publish` per package in dependency order, skipping versions already on the registry. With 2FA,
+   npm prints a browser approval link per publish (tick "skip for 5 minutes" to approve once), or pass
+   `--otp <code>`.
+6. **GitHub Release** `vX.Y.Z` with the changelog section as notes.
+7. **Verify**: waits (up to 10 min; fresh versions can sit in "being processed") until every `package@X.Y.Z` is on
+   the registry with the same shasum as the local pack.
+
+A failure before the commit restores the bumped files. After the commit, fix the cause and re-run
+`pnpm run publish` with no version: the tagged commit skips the gates and already-published packages are skipped.
 
 ## Workflow: beads and GitNexus
 

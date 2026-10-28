@@ -1,0 +1,4 @@
+# npm is this repo's package manager (package-lock.json, npm workspaces). pnpm is only used to run root
+# scripts (`pnpm run publish`); never let it install, or it rewrites node_modules into its own layout and
+# fetches registry copies of the workspace packages.
+verifyDepsBeforeRun: false

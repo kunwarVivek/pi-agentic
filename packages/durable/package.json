@@ -31,7 +31,7 @@
 		"LICENSE"
 	],
 	"bin": {
-		"agentic-pi-durable-worker": "./dist/worker.js"
+		"agentic-pi-durable-worker": "dist/worker.js"
 	},
 	"exports": {
 		".": {

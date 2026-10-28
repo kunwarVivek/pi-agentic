@@ -31,7 +31,7 @@
 		"LICENSE"
 	],
 	"bin": {
-		"org-render": "./dist/render.js"
+		"org-render": "dist/render.js"
 	},
 	"exports": {
 		".": {

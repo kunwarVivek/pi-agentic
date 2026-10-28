@@ -1,8 +1,19 @@
 # Changelog
 
 All notable changes to agentic-pi are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the workspace packages are versioned together
-(currently all at `0.1.1`).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the workspace packages are versioned together.
+Add entries under `## [Unreleased]`; `pnpm run publish <version>` turns that heading into the release section.
+
+## [Unreleased]
+
+### Added
+- `pnpm run publish <patch|minor|major|X.Y.Z>` (`scripts/publish.ts`): one command that bumps every package and
+  its exact inter-package pins, runs all gates, commits, tags `vX.Y.Z`, pushes `main` + tag, publishes to npm in
+  dependency order, and creates the GitHub Release; `--dry-run` validates without side effects, and a re-run with
+  no version resumes a partial release.
+
+### Changed
+- `bin` paths are written as `dist/...` (npm's normalized form), so `npm publish` no longer warns about them.
 
 ## [0.1.1] - 2026-10-28
 
